@@ -77,9 +77,9 @@ class PQMF(torch.nn.Module):
 
         # convert to tensor
         analysis_filter = torch.from_numpy(
-            h_analysis).float().unsqueeze(1).cuda(device)
+            h_analysis).float().unsqueeze(1)
         synthesis_filter = torch.from_numpy(
-            h_synthesis).float().unsqueeze(0).cuda(device)
+            h_synthesis).float().unsqueeze(0)
 
         # register coefficients as beffer
         self.register_buffer("analysis_filter", analysis_filter)
@@ -87,7 +87,7 @@ class PQMF(torch.nn.Module):
 
         # filter for downsampling & upsampling
         updown_filter = torch.zeros(
-            (subbands, subbands, subbands)).float().cuda(device)
+            (subbands, subbands, subbands)).float()
         for k in range(subbands):
             updown_filter[k, k, 0] = 1.0
         self.register_buffer("updown_filter", updown_filter)

@@ -19,15 +19,11 @@ According to [shigabeev](https://github.com/shigabeev)'s [experiment](https://gi
    pip install -r requirements.txt
    ```
    
-    ~~1. You may need to install espeak first: `apt-get install espeak`~~
-   
    If you want to proceed with those cleaned texts in [filelists](filelists), you need to install espeak.
    ```
    apt-get install espeak
    ```
 7. Prepare datasets & configuration
-   
-    ~~1. ex) Download and extract the LJ Speech dataset, then rename or create a link to the dataset folder: `ln -s /path/to/LJSpeech-1.1/wavs DUMMY1`~~
    1. wav files (22050Hz Mono, PCM-16) 
    2. Prepare text files. One for training<sup>[(ex)](filelists/ljs_audio_text_train_filelist.txt)</sup> and one for validation<sup>[(ex)](filelists/ljs_audio_text_val_filelist.txt)</sup>. Split your dataset to each files. As shown in these examples, the datasets in validation file should be fewer than the training one, while being unique from those of training text.
       
@@ -80,6 +76,12 @@ python setup.py build_ext --inplace
 # train_ms.py for multi speaker
 python train.py -c configs/mb_istft_vits2_base.json -m models/test
 ```
+
+## TODO
+- [ ] Implement d-vector instead of speaker id for external speaker encoder as in YourTTS.
+- [ ] Add quantized Text Encoder. BERT -> bottleneck -> text features.
+- [ ] VCTK audio loader
+- [ ] Adan optimizer
 
 ## Credits
 - [jaywalnut310/vits](https://github.com/jaywalnut310/vits)
