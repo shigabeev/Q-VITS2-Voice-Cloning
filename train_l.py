@@ -1,3 +1,4 @@
+import os
 import torch
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
@@ -30,18 +31,14 @@ from adan import Adan
 # torch.autograd.set_detect_anomaly(True)
 torch.backends.cudnn.benchmark = True
 torch.set_float32_matmul_precision('medium')
-global_step = 0
 
-import lightning as L
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint
 from torch.utils.data import DataLoader
 # Import other necessary libraries and modules
 
-class VITS2(L.LightningModule):
-    def __init__(self, hps):
-        super(VITS2, self).__init__()
-        self.hps = hps
-        self.automatic_optimization = False
-        
+def initialize_models(hps):
+
         if "use_mel_posterior_encoder" in hps.model.keys() and hps.model.use_mel_posterior_encoder == True:
             print("Using mel posterior encoder for VITS2")
             posterior_channels = 80  # vits2
@@ -96,7 +93,7 @@ class VITS2(L.LightningModule):
             # DurationDiscriminator = AVAILABLE_DURATION_DISCRIMINATOR_TYPES[duration_discriminator_type]
 
             if duration_discriminator_type == "dur_disc_1":
-                self.net_dur_disc = DurationDiscriminator(
+                net_dur_disc = DurationDiscriminator(
                     hps.model.hidden_channels,
                     hps.model.hidden_channels,
                     3,
@@ -104,7 +101,7 @@ class VITS2(L.LightningModule):
                     gin_channels=hps.model.gin_channels if hps.data.n_speakers != 0 else 0,
                 )
             elif duration_discriminator_type == "dur_disc_2":
-                self.net_dur_disc = DurationDiscriminator2(
+                net_dur_disc = DurationDiscriminator2(
                     hps.model.hidden_channels,
                     hps.model.hidden_channels,
                     3,
@@ -113,11 +110,11 @@ class VITS2(L.LightningModule):
                 )
         else:
             print("NOT using any duration discriminator like VITS1")
-            self.net_dur_disc = None
-            self.use_duration_discriminator = False
+            net_dur_disc = None
+            use_duration_discriminator = False
         
         # Initialize your model components here
-        self.net_g = SynthesizerTrn(
+        net_g = SynthesizerTrn(
             len(symbols),
             posterior_channels,
             hps.train.segment_size // hps.data.hop_length,
@@ -125,8 +122,17 @@ class VITS2(L.LightningModule):
             mas_noise_scale_initial=mas_noise_scale_initial,
             noise_scale_delta=noise_scale_delta,
             **hps.model)
-    
-        self.net_d = MultiPeriodDiscriminator(hps.model.use_spectral_norm)
+
+        net_d = MultiPeriodDiscriminator(hps.model.use_spectral_norm)
+        return net_g, net_d, net_dur_disc
+
+class VITS2(pl.LightningModule):
+    def __init__(self, net_g, net_d, net_dur_disc, hps):
+        super(VITS2, self).__init__()
+        self.hps = hps
+        self.net_g, self.net_d, self.net_dur_disc = net_g, net_d, net_dur_disc
+        self._global_step = 0
+        self.automatic_optimization = False
 
     def training_step(self, batch, batch_idx):
 
@@ -223,7 +229,7 @@ class VITS2(L.LightningModule):
         grad_norm_g = commons.clip_grad_value_(self.net_g.parameters(), None)
         loss_gen_all.backward()
 
-        # if global_step % self.hps.train.log_interval == 0:
+        # if self._global_step % self.hps.train.log_interval == 0:
         #     # tensorboard
 
         lr = optim_g.param_groups[0]['lr']
@@ -261,19 +267,56 @@ class VITS2(L.LightningModule):
         #                         "loss/dur_disc_g" : losses_dur_disc_g,
         #                         "loss/dur_gen" : loss_dur_gen})
 
-        # image_dict = {
-        #     "slice/mel_org": utils.plot_spectrogram_to_numpy(y_mel[0].data.cpu().numpy()),
-        #     "slice/mel_gen": utils.plot_spectrogram_to_numpy(y_hat_mel[0].data.cpu().numpy()),
-        #     "all/mel": utils.plot_spectrogram_to_numpy(mel[0].data.cpu().numpy()),
-        #     "all/attn": utils.plot_alignment_to_numpy(attn[0, 0].data.cpu().numpy())
-        # }
+        image_dict = {
+            "slice/mel_org": utils.plot_spectrogram_to_numpy(y_mel[0].data.cpu().numpy()),
+            "slice/mel_gen": utils.plot_spectrogram_to_numpy(y_hat_mel[0].data.cpu().numpy()),
+            "all/mel": utils.plot_spectrogram_to_numpy(mel[0].data.cpu().numpy()),
+            "all/attn": utils.plot_alignment_to_numpy(attn[0, 0].data.cpu().numpy())
+        }
 
+        # utils.summarize(
+        #             writer=self.logger,
+        #             self._global_step=self._global_step,
+        #             images=image_dict,
+        #             scalars=scalar_dict)
+        
         self.log_dict(scalar_dict)
-        # self.log_dict(image_dict)
-        self.log("global step", global_step)
+        if self._global_step % self.hps.train.eval_interval == 0:
+            self.save_checkpoint()
+
+
+        self._global_step += 1    
             
+    def save_checkpoint(self):
+        print("HEY LOOK I'm CALLED")
+        epoch = self.current_epoch
+        self._global_step = self._global_step
+        utils.save_checkpoint(self.net_g, 
+                              self.optim_g, 
+                              self.hps.train.learning_rate, 
+                              epoch,
+                                os.path.join(self.hps.model_dir, "G_{}.pth".format(self._global_step)))
+        utils.save_checkpoint(self.net_d, self.optim_d, self.hps.train.learning_rate, epoch,
+                                os.path.join(self.hps.model_dir, "D_{}.pth".format(self._global_step)))
+        if self.net_dur_disc is not None:
+            utils.save_checkpoint(self.net_dur_disc, self.optim_dur_disc, self.hps.train.learning_rate, epoch,
+                                    os.path.join(self.hps.model_dir, "DUR_{}.pth".format(self._global_step)))
+
+        prev_g = os.path.join(self.hps.model_dir, "G_{}.pth".format(
+            self._global_step - 3 * self.hps.train.eval_interval))
+        if os.path.exists(prev_g):
+            os.remove(prev_g)
+            prev_d = os.path.join(self.hps.model_dir, "D_{}.pth".format(
+                self._global_step - 3 * self.hps.train.eval_interval))
+            if os.path.exists(prev_d):
+                os.remove(prev_d)
+                prev_dur = os.path.join(self.hps.model_dir, "DUR_{}.pth".format(
+                    self._global_step - 3 * self.hps.train.eval_interval))
+                if os.path.exists(prev_dur):
+                    os.remove(prev_dur)
 
     def validation_step(self, batch, batch_idx):
+        self._global_step = self._global_step
         x, x_lengths, spec, spec_lengths, y, y_lengths, speakers = batch
 
         x, x_lengths = x, x_lengths
@@ -320,13 +363,19 @@ class VITS2(L.LightningModule):
         audio_dict = {
             "gen/audio": y_hat[0, :, :y_hat_lengths[0]]
         }
-        if global_step == 0:
+        if self._global_step == 0:
             image_dict.update(
                 {"gt/mel": utils.plot_spectrogram_to_numpy(mel[0].cpu().numpy())})
             audio_dict.update({"gt/audio": y[0, :, :y_lengths[0]]})
 
-        # self.log_dict(audio_dict)
-        # self.log_dict(image_dict)
+        
+        # utils.summarize(
+        #     writer=self.logger,
+        #     self._global_step=self._global_step,
+        #     images=image_dict,
+        #     audios=audio_dict,
+        #     audio_sampling_rate=self.hps.data.sampling_rate
+        # )
 
     def configure_optimizers(self):
         self.optim_g = Adan(self.net_g.parameters(), 
@@ -382,7 +431,7 @@ def create_train_dataloader(hps):
 
     return DataLoader(
         train_dataset,
-        num_workers=8,
+        num_workers=11,
         batch_size=hps.train.batch_size,
         shuffle=False,
         pin_memory=True,
@@ -393,7 +442,7 @@ def create_validation_dataloader(hps):
     collate_fn = TextAudioSpeakerCollate()
     eval_dataset = TextAudioSpeakerLoader(
         hps.data.validation_files, hps.data)
-    return DataLoader(eval_dataset, num_workers=1, shuffle=False,
+    return DataLoader(eval_dataset, num_workers=11, shuffle=False,
                                 batch_size=hps.train.batch_size, pin_memory=True,
                                 drop_last=False, collate_fn=collate_fn)
 
@@ -401,16 +450,34 @@ def create_validation_dataloader(hps):
 def main():
     hps = utils.get_hparams()
 
-    
+    net_g, net_d, net_dur_disc = initialize_models(hps)
 
     # Initialize your model with hyperparameters
-    model = VITS2(hps)
+    model = VITS2(net_g, net_d, net_dur_disc, hps)
+
+    # saves last-K checkpoints based on "self._global_step" metric
+    # make sure you log it inside your LightningModule
+    # checkpoint_callback = ModelCheckpoint(
+    #     save_top_k=10,
+    #     monitor="self._global_step",
+    #     mode="max",
+    #     dirpath=hps.model_dir,
+    #     filename="vits2-{epoch:02d}-{self._global_step}",
+    # )
+    checkpoint_callback = ModelCheckpoint(
+        every_n_epochs=1,  # Save every epoch
+        dirpath=hps.model_dir,
+        filename="vits2-{epoch:02d}-{self._global_step}"
+    )
 
     # Initialize the trainer
-    trainer = L.Trainer(
+    trainer = pl.Trainer(
+        accelerator='gpu',
+        # limit_train_batches=2, 
+        # limit_val_batches=2,
         max_epochs=hps.train.epochs,
-        limit_val_batches=5,
-        default_root_dir=hps.model_dir
+        default_root_dir=hps.model_dir,
+        callbacks=[checkpoint_callback]
     )
     
     train_loader = create_train_dataloader(hps)
