@@ -35,6 +35,7 @@ from losses import (
 )
 from mel_processing import mel_spectrogram_torch, spec_to_mel_torch
 from text.symbols import symbols
+from adan import Adan
 
 torch.autograd.set_detect_anomaly(True)
 torch.backends.cudnn.benchmark = True
@@ -182,25 +183,39 @@ def run(rank, n_gpus, hps):
         mas_noise_scale_initial=mas_noise_scale_initial,
         noise_scale_delta=noise_scale_delta,
         **hps.model).cuda(rank)
+    
     net_d = MultiPeriodDiscriminator(hps.model.use_spectral_norm).cuda(rank)
 
-    optim_g = torch.optim.AdamW(
-        net_g.parameters(),
-        hps.train.learning_rate,
-        betas=hps.train.betas,
-        eps=hps.train.eps)
-    optim_d = torch.optim.AdamW(
-        net_d.parameters(),
-        hps.train.learning_rate,
-        betas=hps.train.betas,
-        eps=hps.train.eps)
+    net_g.compile()
+    net_d.compile()
+
+    optim_g = Adan(net_g.parameters(), 
+                     lr=hps.train.learning_rate, 
+                     weight_decay=0.02, 
+                     betas=hps.train.betas, 
+                     eps = hps.train.eps, 
+                     max_grad_norm=0., 
+                     no_prox=False)
+
+    optim_d = Adan(net_d.parameters(), 
+                     lr=hps.train.learning_rate, 
+                     weight_decay=0.02, 
+                     betas=hps.train.betas, 
+                     eps = hps.train.eps, 
+                     max_grad_norm=0., 
+                     no_prox=False)
+
 
     if net_dur_disc is not None:
-        optim_dur_disc = torch.optim.AdamW(
-            net_dur_disc.parameters(),
-            hps.train.learning_rate,
-            betas=hps.train.betas,
-            eps=hps.train.eps)
+        optim_dur_disc = Adan(net_dur_disc.parameters(), 
+                     lr=hps.train.learning_rate, 
+                     weight_decay=0.02, 
+                     betas=hps.train.betas, 
+                     eps = hps.train.eps, 
+                     max_grad_norm=0., 
+                     no_prox=False)
+
+        net_dur_disc.compile()
     else:
         optim_dur_disc = None
 

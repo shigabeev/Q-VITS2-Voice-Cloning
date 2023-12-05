@@ -30,3 +30,4 @@ ipython
 # ONNX
 #onnx==1.14.1
 #onnxruntime==1.15.1
+git+https://github.com/sail-sg/Adan.git@9613f61c0e780f74a17b13aa7d37eb87d0de61a7
