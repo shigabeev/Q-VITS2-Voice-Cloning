@@ -3,12 +3,12 @@ from text.japanese import japanese_to_romaji_with_accent, japanese_to_ipa, japan
 from text.korean import latin_to_hangul, number_to_hangul, divide_hangul, korean_to_lazy_ipa, korean_to_ipa, fix_g2pk2_error
 from g2pk2 import G2p
 from text.mandarin import number_to_chinese, chinese_to_bopomofo, latin_to_bopomofo, chinese_to_romaji, chinese_to_lazy_ipa, chinese_to_ipa, chinese_to_ipa2
-#from text.sanskrit import devanagari_to_ipa
+# from text.sanskrit import devanagari_to_ipa
 from text.english import english_to_ipa, english_to_lazy_ipa, english_to_ipa2, english_to_lazy_ipa2
-#from text.thai import num_to_thai, latin_to_thai
-#from text.shanghainese import shanghainese_to_ipa
-#from text.cantonese import cantonese_to_ipa
-#from text.ngu_dialect import ngu_dialect_to_ipa
+# from text.thai import num_to_thai, latin_to_thai
+# from text.shanghainese import shanghainese_to_ipa
+# from text.cantonese import cantonese_to_ipa
+# from text.ngu_dialect import ngu_dialect_to_ipa
 from unidecode import unidecode
 from phonemizer import phonemize
 
@@ -16,38 +16,41 @@ from phonemizer import phonemize
 _whitespace_re = re.compile(r'\s+')
 
 # Regular expression matching Japanese without punctuation marks:
-_japanese_characters = re.compile(r'[A-Za-z\d\u3005\u3040-\u30ff\u4e00-\u9fff\uff11-\uff19\uff21-\uff3a\uff41-\uff5a\uff66-\uff9d]')
+_japanese_characters = re.compile(
+    r'[A-Za-z\d\u3005\u3040-\u30ff\u4e00-\u9fff\uff11-\uff19\uff21-\uff3a\uff41-\uff5a\uff66-\uff9d]')
 
 # Regular expression matching non-Japanese characters or punctuation marks:
-_japanese_marks = re.compile(r'[^A-Za-z\d\u3005\u3040-\u30ff\u4e00-\u9fff\uff11-\uff19\uff21-\uff3a\uff41-\uff5a\uff66-\uff9d]')
+_japanese_marks = re.compile(
+    r'[^A-Za-z\d\u3005\u3040-\u30ff\u4e00-\u9fff\uff11-\uff19\uff21-\uff3a\uff41-\uff5a\uff66-\uff9d]')
 
 # List of (regular expression, replacement) pairs for abbreviations:
 _abbreviations = [(re.compile('\\b%s\\.' % x[0], re.IGNORECASE), x[1]) for x in [
-  ('mrs', 'misess'),
-  ('mr', 'mister'),
-  ('dr', 'doctor'),
-  ('st', 'saint'),
-  ('co', 'company'),
-  ('jr', 'junior'),
-  ('maj', 'major'),
-  ('gen', 'general'),
-  ('drs', 'doctors'),
-  ('rev', 'reverend'),
-  ('lt', 'lieutenant'),
-  ('hon', 'honorable'),
-  ('sgt', 'sergeant'),
-  ('capt', 'captain'),
-  ('esq', 'esquire'),
-  ('ltd', 'limited'),
-  ('col', 'colonel'),
-  ('ft', 'fort'),
+    ('mrs', 'misess'),
+    ('mr', 'mister'),
+    ('dr', 'doctor'),
+    ('st', 'saint'),
+    ('co', 'company'),
+    ('jr', 'junior'),
+    ('maj', 'major'),
+    ('gen', 'general'),
+    ('drs', 'doctors'),
+    ('rev', 'reverend'),
+    ('lt', 'lieutenant'),
+    ('hon', 'honorable'),
+    ('sgt', 'sergeant'),
+    ('capt', 'captain'),
+    ('esq', 'esquire'),
+    ('ltd', 'limited'),
+    ('col', 'colonel'),
+    ('ft', 'fort'),
 ]]
 
 
 def expand_abbreviations(text):
-  for regex, replacement in _abbreviations:
-    text = re.sub(regex, replacement, text)
-  return text
+    for regex, replacement in _abbreviations:
+        text = re.sub(regex, replacement, text)
+    return text
+
 
 def collapse_whitespace(text):
     return re.sub(_whitespace_re, ' ', text)
@@ -65,6 +68,7 @@ def basic_cleaners(text):
     text = collapse_whitespace(text)
     return text
 
+
 '''
 def fix_g2pk2_error(text):
     new_text = ""
@@ -81,18 +85,20 @@ def fix_g2pk2_error(text):
     return new_text
 '''
 
+
 def english_cleaners(text):
-  return english_to_ipa(text)
+    return english_to_ipa(text)
 
 
 def english_cleaners2(text):
-  return english_to_ipa2(text)
+    return english_to_ipa2(text)
 
 
-def english_cleaners3(text): # needs espeak - apt-get install espeak
+def english_cleaners3(text):  # needs espeak - apt-get install espeak
     text = convert_to_ascii(text)
     text = expand_abbreviations(text.lower())
-    phonemes = phonemize(text, language='en-us', backend='espeak', strip=True, preserve_punctuation=True,with_stress=True)
+    phonemes = phonemize(text, language='en-us', backend='espeak',
+                         strip=True, preserve_punctuation=True, with_stress=True)
     phonemes = collapse_whitespace(phonemes)
     return phonemes
 
@@ -118,7 +124,7 @@ def korean_cleaners(text):
     return text
 
 
-def korean_cleaners2(text): # KO part from cjke
+def korean_cleaners2(text):  # KO part from cjke
     '''Pipeline for Korean text'''
     korean_to_ipa(text)
     text = re.sub(r'\s+$', '', text)
@@ -141,13 +147,13 @@ def sanskrit_cleaners(text):
     return text
 
 
-
 # ------------------------------
 ''' cjke type cleaners below '''
-#- text for these cleaners must be labeled first
+# - text for these cleaners must be labeled first
 # ex1 (single) : some.wav|[EN]put some text here[EN]
 # ex2 (multi) : some.wav|0|[EN]put some text here[EN]
 # ------------------------------
+
 
 def zh_ja_mixture_cleaners(text):
     text = re.sub(r'\[ZH\](.*?)\[ZH\]',
@@ -178,7 +184,7 @@ def cjks_cleaners(text):
                   lambda x: japanese_to_ipa(x.group(1))+' ', text)
     text = re.sub(r'\[KO\](.*?)\[KO\]',
                   lambda x: korean_to_lazy_ipa(x.group(1))+' ', text)
-    #text = re.sub(r'\[SA\](.*?)\[SA\]',
+    # text = re.sub(r'\[SA\](.*?)\[SA\]',
     #              lambda x: devanagari_to_ipa(x.group(1))+' ', text)
     text = re.sub(r'\[EN\](.*?)\[EN\]',
                   lambda x: english_to_lazy_ipa(x.group(1))+' ', text)
@@ -213,6 +219,7 @@ def cjke_cleaners2(text):
     text = re.sub(r'\s+$', '', text)
     text = re.sub(r'([^\.,!\?\-…~])$', r'\1.', text)
     return text
+
 
 '''
 #- reserves

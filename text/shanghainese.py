@@ -37,7 +37,8 @@ _latin_to_ipa = [(re.compile('%s' % x[0]), x[1]) for x in [
 
 
 def _number_to_shanghainese(num):
-    num = cn2an.an2cn(num).replace('一十','十').replace('二十', '廿').replace('二', '两')
+    num = cn2an.an2cn(num).replace('一十', '十').replace(
+        '二十', '廿').replace('二', '两')
     return re.sub(r'((?:^|[^三四五六七八九])十|廿)两', r'\1二', num)
 
 
@@ -53,7 +54,7 @@ def latin_to_ipa(text):
 
 def shanghainese_to_ipa(text):
     text = number_to_shanghainese(text.upper())
-    text = converter.convert(text).replace('-','').replace('$',' ')
+    text = converter.convert(text).replace('-', '').replace('$', ' ')
     text = re.sub(r'[A-Z]', lambda x: latin_to_ipa(x.group())+' ', text)
     text = re.sub(r'[、；：]', '，', text)
     text = re.sub(r'\s*，\s*', ', ', text)

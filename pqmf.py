@@ -34,7 +34,8 @@ def design_prototype_filter(taps=62, cutoff_ratio=0.15, beta=9.0):
     with np.errstate(invalid='ignore'):
         h_i = np.sin(omega_c * (np.arange(taps + 1) - 0.5 * taps)) \
             / (np.pi * (np.arange(taps + 1) - 0.5 * taps))
-    h_i[taps // 2] = np.cos(0) * cutoff_ratio  # fix nan due to indeterminate form
+    # fix nan due to indeterminate form
+    h_i[taps // 2] = np.cos(0) * cutoff_ratio
 
     # apply kaiser window
     w = kaiser(taps + 1, beta)
@@ -75,15 +76,18 @@ class PQMF(torch.nn.Module):
                 (-1) ** k * np.pi / 4)
 
         # convert to tensor
-        analysis_filter = torch.from_numpy(h_analysis).float().unsqueeze(1).cuda(device)
-        synthesis_filter = torch.from_numpy(h_synthesis).float().unsqueeze(0).cuda(device)
+        analysis_filter = torch.from_numpy(
+            h_analysis).float().unsqueeze(1).cuda(device)
+        synthesis_filter = torch.from_numpy(
+            h_synthesis).float().unsqueeze(0).cuda(device)
 
         # register coefficients as beffer
         self.register_buffer("analysis_filter", analysis_filter)
         self.register_buffer("synthesis_filter", synthesis_filter)
 
         # filter for downsampling & upsampling
-        updown_filter = torch.zeros((subbands, subbands, subbands)).float().cuda(device)
+        updown_filter = torch.zeros(
+            (subbands, subbands, subbands)).float().cuda(device)
         for k in range(subbands):
             updown_filter[k, k, 0] = 1.0
         self.register_buffer("updown_filter", updown_filter)
@@ -112,5 +116,6 @@ class PQMF(torch.nn.Module):
         # NOTE(kan-bayashi): Power will be dreased so here multipy by # subbands.
         #   Not sure this is the correct way, it is better to check again.
         # TODO(kan-bayashi): Understand the reconstruction procedure
-        x = F.conv_transpose1d(x, self.updown_filter * self.subbands, stride=self.subbands)
+        x = F.conv_transpose1d(x, self.updown_filter *
+                               self.subbands, stride=self.subbands)
         return F.conv1d(self.pad_fn(x), self.synthesis_filter)

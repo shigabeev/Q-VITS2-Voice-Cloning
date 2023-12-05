@@ -1,4 +1,3 @@
-import copy
 import math
 import torch
 from torch import nn
@@ -9,21 +8,24 @@ import modules
 import attentions
 import monotonic_align
 
-from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
+from torch.nn import Conv1d, ConvTranspose1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 from commons import init_weights, get_padding
 
 from pqmf import PQMF
 from stft import TorchSTFT, OnnxSTFT
 
-AVAILABLE_FLOW_TYPES = ["pre_conv", "pre_conv2", "fft", "mono_layer_inter_residual", "mono_layer_post_residual"]
-AVAILABLE_DURATION_DISCRIMINATOR_TYPES = {"dur_disc_1": "DurationDiscriminator", "dur_disc_2": "DurationDiscriminator2"}
+AVAILABLE_FLOW_TYPES = ["pre_conv", "pre_conv2", "fft",
+                        "mono_layer_inter_residual", "mono_layer_post_residual"]
+AVAILABLE_DURATION_DISCRIMINATOR_TYPES = {
+    "dur_disc_1": "DurationDiscriminator", "dur_disc_2": "DurationDiscriminator2"}
 
 
 class StochasticDurationPredictor(nn.Module):
     def __init__(self, in_channels, filter_channels, kernel_size, p_dropout, n_flows=4, gin_channels=0):
         super().__init__()
-        filter_channels = in_channels  # it needs to be removed from future version.
+        # it needs to be removed from future version.
+        filter_channels = in_channels
         self.in_channels = in_channels
         self.filter_channels = filter_channels
         self.kernel_size = kernel_size
@@ -35,21 +37,25 @@ class StochasticDurationPredictor(nn.Module):
         self.flows = nn.ModuleList()
         self.flows.append(modules.ElementwiseAffine(2))
         for i in range(n_flows):
-            self.flows.append(modules.ConvFlow(2, filter_channels, kernel_size, n_layers=3))
+            self.flows.append(modules.ConvFlow(
+                2, filter_channels, kernel_size, n_layers=3))
             self.flows.append(modules.Flip())
 
         self.post_pre = nn.Conv1d(1, filter_channels, 1)
         self.post_proj = nn.Conv1d(filter_channels, filter_channels, 1)
-        self.post_convs = modules.DDSConv(filter_channels, kernel_size, n_layers=3, p_dropout=p_dropout)
+        self.post_convs = modules.DDSConv(
+            filter_channels, kernel_size, n_layers=3, p_dropout=p_dropout)
         self.post_flows = nn.ModuleList()
         self.post_flows.append(modules.ElementwiseAffine(2))
         for i in range(4):
-            self.post_flows.append(modules.ConvFlow(2, filter_channels, kernel_size, n_layers=3))
+            self.post_flows.append(modules.ConvFlow(
+                2, filter_channels, kernel_size, n_layers=3))
             self.post_flows.append(modules.Flip())
 
         self.pre = nn.Conv1d(in_channels, filter_channels, 1)
         self.proj = nn.Conv1d(filter_channels, filter_channels, 1)
-        self.convs = modules.DDSConv(filter_channels, kernel_size, n_layers=3, p_dropout=p_dropout)
+        self.convs = modules.DDSConv(
+            filter_channels, kernel_size, n_layers=3, p_dropout=p_dropout)
         if gin_channels != 0:
             self.cond = nn.Conv1d(gin_channels, filter_channels, 1)
 
@@ -70,7 +76,8 @@ class StochasticDurationPredictor(nn.Module):
             h_w = self.post_pre(w)
             h_w = self.post_convs(h_w, x_mask)
             h_w = self.post_proj(h_w) * x_mask
-            e_q = torch.randn(w.size(0), 2, w.size(2)).to(device=x.device, dtype=x.dtype) * x_mask
+            e_q = torch.randn(w.size(0), 2, w.size(2)).to(
+                device=x.device, dtype=x.dtype) * x_mask
             z_q = e_q
             for flow in self.post_flows:
                 z_q, logdet_q = flow(z_q, x_mask, g=(x + h_w))
@@ -78,8 +85,10 @@ class StochasticDurationPredictor(nn.Module):
             z_u, z1 = torch.split(z_q, [1, 1], 1)
             u = torch.sigmoid(z_u) * x_mask
             z0 = (w - u) * x_mask
-            logdet_tot_q += torch.sum((F.logsigmoid(z_u) + F.logsigmoid(-z_u)) * x_mask, [1, 2])
-            logq = torch.sum(-0.5 * (math.log(2 * math.pi) + (e_q ** 2)) * x_mask, [1, 2]) - logdet_tot_q
+            logdet_tot_q += torch.sum((F.logsigmoid(z_u) +
+                                      F.logsigmoid(-z_u)) * x_mask, [1, 2])
+            logq = torch.sum(-0.5 * (math.log(2 * math.pi) +
+                             (e_q ** 2)) * x_mask, [1, 2]) - logdet_tot_q
 
             logdet_tot = 0
             z0, logdet = self.log_flow(z0, x_mask)
@@ -88,12 +97,14 @@ class StochasticDurationPredictor(nn.Module):
             for flow in flows:
                 z, logdet = flow(z, x_mask, g=x, reverse=reverse)
                 logdet_tot = logdet_tot + logdet
-            nll = torch.sum(0.5 * (math.log(2 * math.pi) + (z ** 2)) * x_mask, [1, 2]) - logdet_tot
+            nll = torch.sum(0.5 * (math.log(2 * math.pi) +
+                            (z ** 2)) * x_mask, [1, 2]) - logdet_tot
             return nll + logq  # [b]
         else:
             flows = list(reversed(self.flows))
             flows = flows[:-2] + [flows[-1]]  # remove a useless vflow
-            z = torch.randn(x.size(0), 2, x.size(2)).to(device=x.device, dtype=x.dtype) * noise_scale
+            z = torch.randn(x.size(0), 2, x.size(2)).to(
+                device=x.device, dtype=x.dtype) * noise_scale
             for flow in flows:
                 z = flow(z, x_mask, g=x, reverse=reverse)
             z0, z1 = torch.split(z, [1, 1], 1)
@@ -112,9 +123,11 @@ class DurationPredictor(nn.Module):
         self.gin_channels = gin_channels
 
         self.drop = nn.Dropout(p_dropout)
-        self.conv_1 = nn.Conv1d(in_channels, filter_channels, kernel_size, padding=kernel_size // 2)
+        self.conv_1 = nn.Conv1d(
+            in_channels, filter_channels, kernel_size, padding=kernel_size // 2)
         self.norm_1 = modules.LayerNorm(filter_channels)
-        self.conv_2 = nn.Conv1d(filter_channels, filter_channels, kernel_size, padding=kernel_size // 2)
+        self.conv_2 = nn.Conv1d(
+            filter_channels, filter_channels, kernel_size, padding=kernel_size // 2)
         self.norm_2 = modules.LayerNorm(filter_channels)
         self.proj = nn.Conv1d(filter_channels, 1, 1)
 
@@ -151,15 +164,19 @@ class DurationDiscriminator(nn.Module):  # vits2
         self.gin_channels = gin_channels
 
         self.drop = nn.Dropout(p_dropout)
-        self.conv_1 = nn.Conv1d(in_channels, filter_channels, kernel_size, padding=kernel_size // 2)
+        self.conv_1 = nn.Conv1d(
+            in_channels, filter_channels, kernel_size, padding=kernel_size // 2)
         # self.norm_1 = modules.LayerNorm(filter_channels)
-        self.conv_2 = nn.Conv1d(filter_channels, filter_channels, kernel_size, padding=kernel_size // 2)
+        self.conv_2 = nn.Conv1d(
+            filter_channels, filter_channels, kernel_size, padding=kernel_size // 2)
         # self.norm_2 = modules.LayerNorm(filter_channels)
         self.dur_proj = nn.Conv1d(1, filter_channels, 1)
 
-        self.pre_out_conv_1 = nn.Conv1d(2 * filter_channels, filter_channels, kernel_size, padding=kernel_size // 2)
+        self.pre_out_conv_1 = nn.Conv1d(
+            2 * filter_channels, filter_channels, kernel_size, padding=kernel_size // 2)
         self.pre_out_norm_1 = modules.LayerNorm(filter_channels)
-        self.pre_out_conv_2 = nn.Conv1d(filter_channels, filter_channels, kernel_size, padding=kernel_size // 2)
+        self.pre_out_conv_2 = nn.Conv1d(
+            filter_channels, filter_channels, kernel_size, padding=kernel_size // 2)
         self.pre_out_norm_2 = modules.LayerNorm(filter_channels)
 
         # if gin_channels != 0:
@@ -244,7 +261,8 @@ class DurationDiscriminator2(nn.Module):  # vits2 - DurationDiscriminator2
         # if gin_channels != 0:
         #   self.cond = nn.Conv1d(gin_channels, in_channels, 1)
 
-        self.output_layer = nn.Sequential(nn.Linear(filter_channels, 1), nn.Sigmoid())
+        self.output_layer = nn.Sequential(
+            nn.Linear(filter_channels, 1), nn.Sigmoid())
 
     def forward_probability(self, x, x_mask, dur, g=None):
         dur = self.dur_proj(dur)
@@ -317,7 +335,8 @@ class TextEncoder(nn.Module):
     def forward(self, x, x_lengths, g=None):
         x = self.emb(x) * math.sqrt(self.hidden_channels)  # [b, t, h]
         x = torch.transpose(x, 1, -1)  # [b, h, t]
-        x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)
+        x_mask = torch.unsqueeze(commons.sequence_mask(
+            x_lengths, x.size(2)), 1).to(x.dtype)
 
         x = self.encoder(x * x_mask, x_mask, g=g)
         stats = self.proj(x) * x_mask
@@ -367,14 +386,16 @@ class ResidualCouplingTransformersLayer2(nn.Module):  # vits2
             gin_channels=gin_channels,
         )
 
-        self.post = nn.Conv1d(hidden_channels, self.half_channels * (2 - mean_only), 1)
+        self.post = nn.Conv1d(
+            hidden_channels, self.half_channels * (2 - mean_only), 1)
         self.post.weight.data.zero_()
         self.post.bias.data.zero_()
 
     def forward(self, x, x_mask, g=None, reverse=False):
         x0, x1 = torch.split(x, [self.half_channels] * 2, 1)
         h = self.pre(x0) * x_mask
-        h = h + self.pre_transformer(h * x_mask, x_mask)  # vits2 residual connection
+        # vits2 residual connection
+        h = h + self.pre_transformer(h * x_mask, x_mask)
         h = self.enc(h, x_mask, g=g)
         stats = self.post(h) * x_mask
         if not self.mean_only:
@@ -445,7 +466,8 @@ class ResidualCouplingTransformersLayer(nn.Module):  # vits2
             window_size=None
         )
 
-        self.post = nn.Conv1d(hidden_channels, self.half_channels * (2 - mean_only), 1)
+        self.post = nn.Conv1d(
+            hidden_channels, self.half_channels * (2 - mean_only), 1)
         self.post.weight.data.zero_()
         self.post.bias.data.zero_()
 
@@ -453,7 +475,8 @@ class ResidualCouplingTransformersLayer(nn.Module):  # vits2
         x0, x1 = torch.split(x, [self.half_channels] * 2, 1)
         x0_ = self.pre_transformer(x0 * x_mask, x_mask)  # vits2
         x0_ = x0_ + x0  # vits2 residual connection
-        h = self.pre(x0_) * x_mask  # changed from x0 to x0_ to retain x0 for the flow
+        # changed from x0 to x0_ to retain x0 for the flow
+        h = self.pre(x0_) * x_mask
         h = self.enc(h, x_mask, g=g)
 
         # vits2 - (experimental;uncomment the following 2 line to use)
@@ -476,7 +499,7 @@ class ResidualCouplingTransformersLayer(nn.Module):  # vits2
             x = torch.cat([x0, x1], 1)
             return x
 
-    def remove_weight_norm(self): # !
+    def remove_weight_norm(self):  # !
         self.enc.remove_weight_norm()
 
 
@@ -512,7 +535,8 @@ class FFTransformerCouplingLayer(nn.Module):  # vits2
             isflow=True,
             gin_channels=gin_channels
         )
-        self.post = nn.Conv1d(hidden_channels, self.half_channels * (2 - mean_only), 1)
+        self.post = nn.Conv1d(
+            hidden_channels, self.half_channels * (2 - mean_only), 1)
         self.post.weight.data.zero_()
         self.post.bias.data.zero_()
 
@@ -566,7 +590,8 @@ class MonoTransformerFlowLayer(nn.Module):  # vits2
             window_size=None
         )
 
-        self.post = nn.Conv1d(self.half_channels, self.half_channels * (2 - mean_only), 1)
+        self.post = nn.Conv1d(self.half_channels,
+                              self.half_channels * (2 - mean_only), 1)
         self.post.weight.data.zero_()
         self.post.bias.data.zero_()
 
@@ -586,7 +611,8 @@ class MonoTransformerFlowLayer(nn.Module):  # vits2
                 x_ = torch.cat([x0, x1], 1)
                 x = x + x_
                 logdet = torch.sum(torch.log(torch.exp(logs) + 1), [1, 2])
-                logdet = logdet + torch.log(torch.tensor(2)) * (x0.shape[1] * x0.shape[2])
+                logdet = logdet + \
+                    torch.log(torch.tensor(2)) * (x0.shape[1] * x0.shape[2])
                 return x, logdet
 
             else:
@@ -753,7 +779,7 @@ class ResidualCouplingTransformersBlock(nn.Module):  # vits2
                 x = flow(x, x_mask, g=g, reverse=reverse)
         return x
 
-    def remove_weight_norm(self): # !
+    def remove_weight_norm(self):  # !
         for i, l in enumerate(self.flows):
             if i % 2 == 0:
                 l.remove_weight_norm()
@@ -801,7 +827,7 @@ class ResidualCouplingBlock(nn.Module):
                 x = flow(x, x_mask, g=g, reverse=reverse)
         return x
 
-    def remove_weight_norm(self): # !
+    def remove_weight_norm(self):  # !
         for i, l in enumerate(self.flows):
             if i % 2 == 0:
                 l.remove_weight_norm()
@@ -826,11 +852,13 @@ class PosteriorEncoder(nn.Module):
         self.gin_channels = gin_channels
 
         self.pre = nn.Conv1d(in_channels, hidden_channels, 1)
-        self.enc = modules.WN(hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels=gin_channels)
+        self.enc = modules.WN(hidden_channels, kernel_size,
+                              dilation_rate, n_layers, gin_channels=gin_channels)
         self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
     def forward(self, x, x_lengths, g=None):
-        x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)), 1).to(x.dtype)
+        x_mask = torch.unsqueeze(commons.sequence_mask(
+            x_lengths, x.size(2)), 1).to(x.dtype)
         x = self.pre(x) * x_mask
         x = self.enc(x, x_mask, g=g)
         stats = self.proj(x) * x_mask
@@ -845,7 +873,8 @@ class Generator(torch.nn.Module):
         super(Generator, self).__init__()
         self.num_kernels = len(resblock_kernel_sizes)
         self.num_upsamples = len(upsample_rates)
-        self.conv_pre = Conv1d(initial_channel, upsample_initial_channel, 7, 1, padding=3)
+        self.conv_pre = Conv1d(
+            initial_channel, upsample_initial_channel, 7, 1, padding=3)
         resblock = modules.ResBlock1 if resblock == '1' else modules.ResBlock2
 
         self.ups = nn.ModuleList()
@@ -906,7 +935,8 @@ class iSTFT_Generator(torch.nn.Module):
 
         self.num_kernels = len(resblock_kernel_sizes)
         self.num_upsamples = len(upsample_rates)
-        self.conv_pre = weight_norm(Conv1d(initial_channel, upsample_initial_channel, 7, 1, padding=3))
+        self.conv_pre = weight_norm(
+            Conv1d(initial_channel, upsample_initial_channel, 7, 1, padding=3))
         resblock = modules.ResBlock1 if resblock == '1' else modules.ResBlock2
 
         self.ups = nn.ModuleList()
@@ -922,7 +952,8 @@ class iSTFT_Generator(torch.nn.Module):
                 self.resblocks.append(resblock(ch, k, d))
 
         self.post_n_fft = self.gen_istft_n_fft
-        self.conv_post = weight_norm(Conv1d(ch, self.post_n_fft + 2, 7, 1, padding=3))
+        self.conv_post = weight_norm(
+            Conv1d(ch, self.post_n_fft + 2, 7, 1, padding=3))
         self.ups.apply(init_weights)
         self.conv_post.apply(init_weights)
         self.reflection_pad = torch.nn.ReflectionPad1d((1, 0))
@@ -968,7 +999,7 @@ class iSTFT_Generator(torch.nn.Module):
         remove_weight_norm(self.conv_post)
 
 
-class Multiband_iSTFT_Generator(torch.nn.Module): # !
+class Multiband_iSTFT_Generator(torch.nn.Module):  # !
     def __init__(self, initial_channel, resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates,
                  upsample_initial_channel, upsample_kernel_sizes, gen_istft_n_fft, gen_istft_hop_size, subbands,
                  gin_channels=0, is_onnx=False):
@@ -977,7 +1008,8 @@ class Multiband_iSTFT_Generator(torch.nn.Module): # !
         self.subbands = subbands
         self.num_kernels = len(resblock_kernel_sizes)
         self.num_upsamples = len(upsample_rates)
-        self.conv_pre = weight_norm(Conv1d(initial_channel, upsample_initial_channel, 7, 1, padding=3))
+        self.conv_pre = weight_norm(
+            Conv1d(initial_channel, upsample_initial_channel, 7, 1, padding=3))
         resblock = modules.ResBlock1 if resblock == '1' else modules.ResBlock2
 
         self.ups = nn.ModuleList()
@@ -997,18 +1029,21 @@ class Multiband_iSTFT_Generator(torch.nn.Module): # !
         self.reflection_pad = torch.nn.ReflectionPad1d((1, 0))
         self.reshape_pixelshuffle = []
 
-        self.subband_conv_post = weight_norm(Conv1d(ch, self.subbands * (self.post_n_fft + 2), 7, 1, padding=3))
+        self.subband_conv_post = weight_norm(
+            Conv1d(ch, self.subbands * (self.post_n_fft + 2), 7, 1, padding=3))
 
         self.subband_conv_post.apply(init_weights)
 
         self.gen_istft_n_fft = gen_istft_n_fft
         self.gen_istft_hop_size = gen_istft_hop_size
 
-        #- for onnx
+        # - for onnx
         if is_onnx == True:
-            self.stft = OnnxSTFT(filter_length=self.gen_istft_n_fft, hop_length=self.gen_istft_hop_size, win_length=self.gen_istft_n_fft)
+            self.stft = OnnxSTFT(filter_length=self.gen_istft_n_fft,
+                                 hop_length=self.gen_istft_hop_size, win_length=self.gen_istft_n_fft)
         else:
-            self.stft = TorchSTFT(filter_length=self.gen_istft_n_fft, hop_length=self.gen_istft_hop_size, win_length=self.gen_istft_n_fft)
+            self.stft = TorchSTFT(filter_length=self.gen_istft_n_fft,
+                                  hop_length=self.gen_istft_hop_size, win_length=self.gen_istft_n_fft)
 
     def forward(self, x, g=None):
         '''
@@ -1035,15 +1070,18 @@ class Multiband_iSTFT_Generator(torch.nn.Module): # !
         x = F.leaky_relu(x)
         x = self.reflection_pad(x)
         x = self.subband_conv_post(x)
-        x = torch.reshape(x, (x.shape[0], self.subbands, x.shape[1] // self.subbands, x.shape[-1]))
+        x = torch.reshape(
+            x, (x.shape[0], self.subbands, x.shape[1] // self.subbands, x.shape[-1]))
 
         spec = torch.exp(x[:, :, :self.post_n_fft // 2 + 1, :])
         phase = math.pi * torch.sin(x[:, :, self.post_n_fft // 2 + 1:, :])
 
         y_mb_hat = stft.inverse(
-            torch.reshape(spec, (spec.shape[0] * self.subbands, self.gen_istft_n_fft // 2 + 1, spec.shape[-1])),
+            torch.reshape(
+                spec, (spec.shape[0] * self.subbands, self.gen_istft_n_fft // 2 + 1, spec.shape[-1])),
             torch.reshape(phase, (phase.shape[0] * self.subbands, self.gen_istft_n_fft // 2 + 1, phase.shape[-1])))
-        y_mb_hat = torch.reshape(y_mb_hat, (x.shape[0], self.subbands, 1, y_mb_hat.shape[-1]))
+        y_mb_hat = torch.reshape(
+            y_mb_hat, (x.shape[0], self.subbands, 1, y_mb_hat.shape[-1]))
         y_mb_hat = y_mb_hat.squeeze(-2)
 
         y_g_hat = pqmf.synthesis(y_mb_hat)
@@ -1067,7 +1105,8 @@ class Multistream_iSTFT_Generator(torch.nn.Module):
         self.subbands = subbands
         self.num_kernels = len(resblock_kernel_sizes)
         self.num_upsamples = len(upsample_rates)
-        self.conv_pre = weight_norm(Conv1d(initial_channel, upsample_initial_channel, 7, 1, padding=3))
+        self.conv_pre = weight_norm(
+            Conv1d(initial_channel, upsample_initial_channel, 7, 1, padding=3))
         resblock = modules.ResBlock1 if resblock == '1' else modules.ResBlock2
 
         self.ups = nn.ModuleList()
@@ -1087,26 +1126,31 @@ class Multistream_iSTFT_Generator(torch.nn.Module):
         self.reflection_pad = torch.nn.ReflectionPad1d((1, 0))
         self.reshape_pixelshuffle = []
 
-        self.subband_conv_post = weight_norm(Conv1d(ch, self.subbands * (self.post_n_fft + 2), 7, 1, padding=3))
+        self.subband_conv_post = weight_norm(
+            Conv1d(ch, self.subbands * (self.post_n_fft + 2), 7, 1, padding=3))
 
         self.subband_conv_post.apply(init_weights)
 
         self.gen_istft_n_fft = gen_istft_n_fft
         self.gen_istft_hop_size = gen_istft_hop_size
 
-        updown_filter = torch.zeros((self.subbands, self.subbands, self.subbands)).float()
+        updown_filter = torch.zeros(
+            (self.subbands, self.subbands, self.subbands)).float()
         for k in range(self.subbands):
             updown_filter[k, k, 0] = 1.0
         self.register_buffer("updown_filter", updown_filter)
-        #self.multistream_conv_post = weight_norm(Conv1d(4, 1, kernel_size=63, bias=False, padding=get_padding(63, 1)))
-        self.multistream_conv_post = weight_norm(Conv1d(self.subbands, 1, kernel_size=63, bias=False, padding=get_padding(63, 1))) # from MB-iSTFT-VITS-44100-Ja
+        # self.multistream_conv_post = weight_norm(Conv1d(4, 1, kernel_size=63, bias=False, padding=get_padding(63, 1)))
+        self.multistream_conv_post = weight_norm(Conv1d(
+            self.subbands, 1, kernel_size=63, bias=False, padding=get_padding(63, 1)))  # from MB-iSTFT-VITS-44100-Ja
         self.multistream_conv_post.apply(init_weights)
 
-        #- for onnx
+        # - for onnx
         if is_onnx == True:
-            self.stft = OnnxSTFT(filter_length=self.gen_istft_n_fft, hop_length=self.gen_istft_hop_size, win_length=self.gen_istft_n_fft)
+            self.stft = OnnxSTFT(filter_length=self.gen_istft_n_fft,
+                                 hop_length=self.gen_istft_hop_size, win_length=self.gen_istft_n_fft)
         else:
-            self.stft = TorchSTFT(filter_length=self.gen_istft_n_fft, hop_length=self.gen_istft_hop_size, win_length=self.gen_istft_n_fft)
+            self.stft = TorchSTFT(filter_length=self.gen_istft_n_fft,
+                                  hop_length=self.gen_istft_hop_size, win_length=self.gen_istft_n_fft)
 
     def forward(self, x, g=None):
         '''
@@ -1135,19 +1179,23 @@ class Multistream_iSTFT_Generator(torch.nn.Module):
         x = F.leaky_relu(x)
         x = self.reflection_pad(x)
         x = self.subband_conv_post(x)
-        x = torch.reshape(x, (x.shape[0], self.subbands, x.shape[1] // self.subbands, x.shape[-1]))
+        x = torch.reshape(
+            x, (x.shape[0], self.subbands, x.shape[1] // self.subbands, x.shape[-1]))
 
         spec = torch.exp(x[:, :, :self.post_n_fft // 2 + 1, :])
         phase = math.pi * torch.sin(x[:, :, self.post_n_fft // 2 + 1:, :])
 
         y_mb_hat = stft.inverse(
-            torch.reshape(spec, (spec.shape[0] * self.subbands, self.gen_istft_n_fft // 2 + 1, spec.shape[-1])),
+            torch.reshape(
+                spec, (spec.shape[0] * self.subbands, self.gen_istft_n_fft // 2 + 1, spec.shape[-1])),
             torch.reshape(phase, (phase.shape[0] * self.subbands, self.gen_istft_n_fft // 2 + 1, phase.shape[-1])))
-        y_mb_hat = torch.reshape(y_mb_hat, (x.shape[0], self.subbands, 1, y_mb_hat.shape[-1]))
+        y_mb_hat = torch.reshape(
+            y_mb_hat, (x.shape[0], self.subbands, 1, y_mb_hat.shape[-1]))
         y_mb_hat = y_mb_hat.squeeze(-2)
 
-        #y_mb_hat = F.conv_transpose1d(y_mb_hat, self.updown_filter.cuda(x.device) * self.subbands, stride=self.subbands)
-        y_mb_hat = F.conv_transpose1d(y_mb_hat, self.updown_filter.to(x.device) * self.subbands, stride=self.subbands)
+        # y_mb_hat = F.conv_transpose1d(y_mb_hat, self.updown_filter.cuda(x.device) * self.subbands, stride=self.subbands)
+        y_mb_hat = F.conv_transpose1d(y_mb_hat, self.updown_filter.to(
+            x.device) * self.subbands, stride=self.subbands)
 
         y_g_hat = self.multistream_conv_post(y_mb_hat)
 
@@ -1168,11 +1216,16 @@ class DiscriminatorP(torch.nn.Module):
         self.use_spectral_norm = use_spectral_norm
         norm_f = weight_norm if use_spectral_norm == False else spectral_norm
         self.convs = nn.ModuleList([
-            norm_f(Conv2d(1, 32, (kernel_size, 1), (stride, 1), padding=(get_padding(kernel_size, 1), 0))),
-            norm_f(Conv2d(32, 128, (kernel_size, 1), (stride, 1), padding=(get_padding(kernel_size, 1), 0))),
-            norm_f(Conv2d(128, 512, (kernel_size, 1), (stride, 1), padding=(get_padding(kernel_size, 1), 0))),
-            norm_f(Conv2d(512, 1024, (kernel_size, 1), (stride, 1), padding=(get_padding(kernel_size, 1), 0))),
-            norm_f(Conv2d(1024, 1024, (kernel_size, 1), 1, padding=(get_padding(kernel_size, 1), 0))),
+            norm_f(Conv2d(1, 32, (kernel_size, 1), (stride, 1),
+                   padding=(get_padding(kernel_size, 1), 0))),
+            norm_f(Conv2d(32, 128, (kernel_size, 1), (stride, 1),
+                   padding=(get_padding(kernel_size, 1), 0))),
+            norm_f(Conv2d(128, 512, (kernel_size, 1), (stride, 1),
+                   padding=(get_padding(kernel_size, 1), 0))),
+            norm_f(Conv2d(512, 1024, (kernel_size, 1), (stride, 1),
+                   padding=(get_padding(kernel_size, 1), 0))),
+            norm_f(Conv2d(1024, 1024, (kernel_size, 1), 1,
+                   padding=(get_padding(kernel_size, 1), 0))),
         ])
         self.conv_post = norm_f(Conv2d(1024, 1, (3, 1), 1, padding=(1, 0)))
 
@@ -1232,7 +1285,9 @@ class MultiPeriodDiscriminator(torch.nn.Module):
         periods = [2, 3, 5, 7, 11]
 
         discs = [DiscriminatorS(use_spectral_norm=use_spectral_norm)]
-        discs = discs + [DiscriminatorP(i, use_spectral_norm=use_spectral_norm) for i in periods]
+        discs = discs + \
+            [DiscriminatorP(i, use_spectral_norm=use_spectral_norm)
+             for i in periods]
         self.discriminators = nn.ModuleList(discs)
 
     def forward(self, y, y_hat):
@@ -1307,15 +1362,18 @@ class SynthesizerTrn(nn.Module):
         self.ms_istft_vits = ms_istft_vits
         self.mb_istft_vits = mb_istft_vits
         self.istft_vits = istft_vits
-        self.use_spk_conditioned_encoder = kwargs.get("use_spk_conditioned_encoder", False)
+        self.use_spk_conditioned_encoder = kwargs.get(
+            "use_spk_conditioned_encoder", False)
         self.use_transformer_flows = kwargs.get("use_transformer_flows", False)
-        self.transformer_flow_type = kwargs.get("transformer_flow_type", "mono_layer_post_residual")
+        self.transformer_flow_type = kwargs.get(
+            "transformer_flow_type", "mono_layer_post_residual")
         if self.use_transformer_flows:
             assert self.transformer_flow_type in AVAILABLE_FLOW_TYPES, f"transformer_flow_type must be one of {AVAILABLE_FLOW_TYPES}"
         self.use_sdp = use_sdp
         # self.use_duration_discriminator = kwargs.get("use_duration_discriminator", False)
         self.use_noise_scaled_mas = kwargs.get("use_noise_scaled_mas", False)
-        self.mas_noise_scale_initial = kwargs.get("mas_noise_scale_initial", 0.01)
+        self.mas_noise_scale_initial = kwargs.get(
+            "mas_noise_scale_initial", 0.01)
         self.noise_scale_delta = kwargs.get("noise_scale_delta", 2e-6)
 
         self.current_mas_noise_scale = self.mas_noise_scale_initial
@@ -1373,9 +1431,11 @@ class SynthesizerTrn(nn.Module):
         )
 
         if use_sdp:
-            self.dp = StochasticDurationPredictor(hidden_channels, 192, 3, 0.5, 4, gin_channels=gin_channels)
+            self.dp = StochasticDurationPredictor(
+                hidden_channels, 192, 3, 0.5, 4, gin_channels=gin_channels)
         else:
-            self.dp = DurationPredictor(hidden_channels, 256, 3, 0.5, gin_channels=gin_channels)
+            self.dp = DurationPredictor(
+                hidden_channels, 256, 3, 0.5, gin_channels=gin_channels)
 
         if n_speakers > 1:
             self.emb_g = nn.Embedding(n_speakers, gin_channels)
@@ -1394,19 +1454,26 @@ class SynthesizerTrn(nn.Module):
         with torch.no_grad():
             # negative cross-entropy
             s_p_sq_r = torch.exp(-2 * logs_p)  # [b, d, t]
-            neg_cent1 = torch.sum(-0.5 * math.log(2 * math.pi) - logs_p, [1], keepdim=True)  # [b, 1, t_s]
+            # [b, 1, t_s]
+            neg_cent1 = torch.sum(-0.5 * math.log(2 *
+                                  math.pi) - logs_p, [1], keepdim=True)
             neg_cent2 = torch.matmul(-0.5 * (z_p ** 2).transpose(1, 2),
                                      s_p_sq_r)  # [b, t_t, d] x [b, d, t_s] = [b, t_t, t_s]
-            neg_cent3 = torch.matmul(z_p.transpose(1, 2), (m_p * s_p_sq_r))  # [b, t_t, d] x [b, d, t_s] = [b, t_t, t_s]
-            neg_cent4 = torch.sum(-0.5 * (m_p ** 2) * s_p_sq_r, [1], keepdim=True)  # [b, 1, t_s]
+            # [b, t_t, d] x [b, d, t_s] = [b, t_t, t_s]
+            neg_cent3 = torch.matmul(z_p.transpose(1, 2), (m_p * s_p_sq_r))
+            neg_cent4 = torch.sum(-0.5 * (m_p ** 2) *
+                                  s_p_sq_r, [1], keepdim=True)  # [b, 1, t_s]
             neg_cent = neg_cent1 + neg_cent2 + neg_cent3 + neg_cent4
 
             if self.use_noise_scaled_mas:
-                epsilon = torch.std(neg_cent) * torch.randn_like(neg_cent) * self.current_mas_noise_scale
+                epsilon = torch.std(
+                    neg_cent) * torch.randn_like(neg_cent) * self.current_mas_noise_scale
                 neg_cent = neg_cent + epsilon
 
-            attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
-            attn = monotonic_align.maximum_path(neg_cent, attn_mask.squeeze(1)).unsqueeze(1).detach()
+            attn_mask = torch.unsqueeze(
+                x_mask, 2) * torch.unsqueeze(y_mask, -1)
+            attn = monotonic_align.maximum_path(
+                neg_cent, attn_mask.squeeze(1)).unsqueeze(1).detach()
 
         w = attn.sum(2)
         if self.use_sdp:
@@ -1417,13 +1484,17 @@ class SynthesizerTrn(nn.Module):
         else:
             logw_ = torch.log(w + 1e-6) * x_mask
             logw = self.dp(x, x_mask, g=g)
-            l_length = torch.sum((logw - logw_) ** 2, [1, 2]) / torch.sum(x_mask)  # for averaging
+            l_length = torch.sum((logw - logw_) ** 2,
+                                 [1, 2]) / torch.sum(x_mask)  # for averaging
 
         # expand prior
-        m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)
-        logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
+        m_p = torch.matmul(attn.squeeze(
+            1), m_p.transpose(1, 2)).transpose(1, 2)
+        logs_p = torch.matmul(attn.squeeze(
+            1), logs_p.transpose(1, 2)).transpose(1, 2)
 
-        z_slice, ids_slice = commons.rand_slice_segments(z, y_lengths, self.segment_size)
+        z_slice, ids_slice = commons.rand_slice_segments(
+            z, y_lengths, self.segment_size)
         o, o_mb = self.dec(z_slice, g=g)
         return o, o_mb, l_length, attn, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q), (x, logw, logw_)
 
@@ -1434,17 +1505,20 @@ class SynthesizerTrn(nn.Module):
             g = None
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, g=g)
         if self.use_sdp:
-            logw = self.dp(x, x_mask, g=g, reverse=True, noise_scale=noise_scale_w)
+            logw = self.dp(x, x_mask, g=g, reverse=True,
+                           noise_scale=noise_scale_w)
         else:
             logw = self.dp(x, x_mask, g=g)
         w = torch.exp(logw) * x_mask * length_scale
         w_ceil = torch.ceil(w)
         y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
-        y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, None), 1).to(x_mask.dtype)
+        y_mask = torch.unsqueeze(commons.sequence_mask(
+            y_lengths, None), 1).to(x_mask.dtype)
         attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
         attn = commons.generate_path(w_ceil, attn_mask)
 
-        m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)  # [b, t', t], [b, t, d] -> [b, d, t']
+        m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(
+            1, 2)  # [b, t', t], [b, t, d] -> [b, d, t']
         logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1,
                                                                                  2)  # [b, t', t], [b, t, d] -> [b, d, t']
 
@@ -1454,10 +1528,10 @@ class SynthesizerTrn(nn.Module):
         o, o_mb = self.dec((z * y_mask)[:, :, :max_len], g=g)
         return o, o_mb, attn, y_mask, (z, z_p, m_p, logs_p)
 
-
-    #'''
-    ## currently vits-2 is not capable of voice conversion
+    # '''
+    # currently vits-2 is not capable of voice conversion
     # comment - choihkk : Assuming the use of the ResidualCouplingTransformersLayer2 module, it seems that voice conversion is possible
+
     def voice_conversion(self, y, y_lengths, sid_src, sid_tgt):
         assert self.n_speakers > 0, "n_speakers have to be larger than 0."
         g_src = self.emb_g(sid_src).unsqueeze(-1)
@@ -1467,4 +1541,4 @@ class SynthesizerTrn(nn.Module):
         z_hat = self.flow(z_p, y_mask, g=g_tgt, reverse=True)
         o_hat, o_hat_mb = self.dec(z_hat * y_mask, g=g_tgt)
         return o_hat, o_hat_mb, y_mask, (z, z_p, z_hat)
-    #'''
+    # '''
