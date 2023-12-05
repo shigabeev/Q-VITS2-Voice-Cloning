@@ -74,6 +74,7 @@ python setup.py build_ext --inplace
 ## Training Example
 ```sh
 # train_ms.py for multi speaker
+# train_l.py to use Lightning
 python train.py -c configs/mb_istft_vits2_base.json -m models/test
 ```
 
