@@ -33,7 +33,7 @@ torch.backends.cudnn.benchmark = True
 torch.set_float32_matmul_precision('medium')
 
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateFinder
 from torch.utils.data import DataLoader
 # Import other necessary libraries and modules
 
@@ -119,6 +119,7 @@ def initialize_models(hps):
             posterior_channels,
             hps.train.segment_size // hps.data.hop_length,
             n_speakers=hps.data.n_speakers,
+            use_d_vector=hps.data.use_d_vector,
             mas_noise_scale_initial=mas_noise_scale_initial,
             noise_scale_delta=noise_scale_delta,
             **hps.model)
@@ -131,6 +132,7 @@ class VITS2(pl.LightningModule):
         super(VITS2, self).__init__()
         self.hps = hps
         self.net_g, self.net_d, self.net_dur_disc = net_g, net_d, net_dur_disc
+        net_d.compile()
         self._global_step = 0
         self.automatic_optimization = False
 
@@ -142,10 +144,15 @@ class VITS2(pl.LightningModule):
         # Unpack the batch data
         x, x_lengths, spec, spec_lengths, y, y_lengths, speakers = batch
 
+        if self.hps.data.use_d_vector:
+            d_vectors = speakers
+        else:
+            d_vectors = None
+
         # Forward pass for the generator
         y_hat, y_hat_mb, l_length, attn, ids_slice, x_mask, z_mask, \
             (z, z_p, m_p, logs_p, m_q, logs_q), (hidden_x, logw, logw_) = self.net_g(
-                x, x_lengths, spec, spec_lengths, speakers)
+                x, x_lengths, spec, spec_lengths, sid=speakers, d_vector=d_vectors)
 
         # Mel-spectrogram conversion
         if self.hps.model.use_mel_posterior_encoder or self.hps.data.use_mel_posterior_encoder:
@@ -315,14 +322,17 @@ class VITS2(pl.LightningModule):
                 if os.path.exists(prev_dur):
                     os.remove(prev_dur)
 
+    def load_checkpoint(self):
+        raise NotImplementedError
+
     def validation_step(self, batch, batch_idx):
         self._global_step = self._global_step
         x, x_lengths, spec, spec_lengths, y, y_lengths, speakers = batch
 
-        x, x_lengths = x, x_lengths
-        spec, spec_lengths = spec, spec_lengths
-        y, y_lengths = y, y_lengths
-        speakers = speakers
+        if self.hps.data.use_d_vector:
+            d_vectors = speakers
+        else:
+            d_vectors = None
 
         # remove else
         x = x[:1]
@@ -334,7 +344,7 @@ class VITS2(pl.LightningModule):
         speakers = speakers[:1]
 
         y_hat, y_hat_mb, attn, mask, * \
-            _ = self.net_g.infer(x, x_lengths, speakers, max_len=1000)
+            _ = self.net_g.infer(x, x_lengths, sid=speakers, d_vector=d_vectors, max_len=1000)
         y_hat_lengths = mask.sum([1, 2]).long() * self.hps.data.hop_length
 
         if self.hps.model.use_mel_posterior_encoder or self.hps.data.use_mel_posterior_encoder:
@@ -427,7 +437,8 @@ def create_train_dataloader(hps):
     train_dataset = TextAudioSpeakerLoader(hps.data.training_files, hps.data)
 
     # Custom collate function
-    collate_fn = TextAudioSpeakerCollate()
+    print('use_d_vectors:', hps.data.use_d_vector)
+    collate_fn = TextAudioSpeakerCollate(use_d_vector=hps.data.use_d_vector)
 
     return DataLoader(
         train_dataset,
@@ -455,29 +466,13 @@ def main():
     # Initialize your model with hyperparameters
     model = VITS2(net_g, net_d, net_dur_disc, hps)
 
-    # saves last-K checkpoints based on "self._global_step" metric
-    # make sure you log it inside your LightningModule
-    # checkpoint_callback = ModelCheckpoint(
-    #     save_top_k=10,
-    #     monitor="self._global_step",
-    #     mode="max",
-    #     dirpath=hps.model_dir,
-    #     filename="vits2-{epoch:02d}-{self._global_step}",
-    # )
-    checkpoint_callback = ModelCheckpoint(
-        every_n_epochs=1,  # Save every epoch
-        dirpath=hps.model_dir,
-        filename="vits2-{epoch:02d}-{self._global_step}"
-    )
-
     # Initialize the trainer
     trainer = pl.Trainer(
         accelerator='gpu',
         # limit_train_batches=2, 
         # limit_val_batches=2,
         max_epochs=hps.train.epochs,
-        default_root_dir=hps.model_dir,
-        callbacks=[checkpoint_callback]
+        default_root_dir=hps.model_dir
     )
     
     train_loader = create_train_dataloader(hps)

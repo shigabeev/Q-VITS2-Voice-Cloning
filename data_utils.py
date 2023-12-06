@@ -8,6 +8,10 @@ from mel_processing import spectrogram_torch, mel_spectrogram_torch, spec_to_mel
 from utils import load_wav_to_torch, load_filepaths_and_text
 from text import text_to_sequence, cleaned_text_to_sequence
 
+from TTS.tts.utils.speakers import SpeakerManager
+
+CONFIG_SE_PATH = "/home/frappuccino/dev/synthy-tts/tts_triton_serving/model_repository/speaker_encoder/1682104736/speaker_checkpoint/config_se.json"
+CHECKPOINT_SE_PATH = "/home/frappuccino/dev/synthy-tts/tts_triton_serving/model_repository/speaker_encoder/1682104736/speaker_checkpoint/speaker_encoder.pth.tar"
 
 class TextAudioLoader(torch.utils.data.Dataset):
     """
@@ -110,6 +114,9 @@ class TextAudioLoader(torch.utils.data.Dataset):
             text_norm = commons.intersperse(text_norm, 0)
         text_norm = torch.LongTensor(text_norm)
         return text_norm
+    
+    def get_speaker_embedding(self):
+        pass
 
     def __getitem__(self, index):
         return self.get_audio_text_pair(self.audiopaths_and_text[index])
@@ -199,6 +206,11 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
         self.cleaned_text = getattr(hparams, "cleaned_text", False)
 
         self.add_blank = hparams.add_blank
+        self.use_d_vector =  getattr(hparams, "use_d_vector", False)
+        if self.use_d_vector:
+            self.speaker_manager = SpeakerManager(encoder_config_path=CONFIG_SE_PATH, 
+                                 encoder_model_path=CHECKPOINT_SE_PATH, 
+                                 use_cuda=False)
         self.min_text_len = getattr(hparams, "min_text_len", 1)
         self.max_text_len = getattr(hparams, "max_text_len", 190)
         # self.min_audio_len = getattr(hparams, "min_audio_len", 8192)
@@ -242,7 +254,10 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
         audiopath, sid, text = audiopath_sid_text[0], audiopath_sid_text[1], audiopath_sid_text[2]
         text = self.get_text(text)
         spec, wav = self.get_audio(audiopath)
-        sid = self.get_sid(sid)
+        if self.use_d_vector:
+            sid = self.get_d_vector(audiopath)
+        else:
+            sid = self.get_sid(sid)
         return (text, spec, wav, sid)
 
     def get_audio(self, filename):
@@ -279,6 +294,15 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
             spec = torch.squeeze(spec, 0)
             torch.save(spec, spec_filename)
         return spec, audio_norm
+    
+    def get_d_vector(self, path):
+        spk_emb_path = path.replace('.wav', '.emb')
+        if os.path.exists(spk_emb_path):
+            emb = torch.load(spk_emb_path)
+        else:
+            emb = torch.Tensor(self.speaker_manager.compute_embedding_from_clip(path))
+            torch.save(emb, spk_emb_path)
+        return emb
 
     def get_text(self, text):
         if self.cleaned_text:
@@ -305,8 +329,9 @@ class TextAudioSpeakerCollate():
     """ Zero-pads model inputs and targets
     """
 
-    def __init__(self, return_ids=False):
+    def __init__(self, return_ids=False, use_d_vector=True):
         self.return_ids = return_ids
+        self.use_d_vector = use_d_vector
 
     def __call__(self, batch):
         """Collate's training batch from normalized text, audio and speaker identities
@@ -326,6 +351,10 @@ class TextAudioSpeakerCollate():
         text_lengths = torch.LongTensor(len(batch))
         spec_lengths = torch.LongTensor(len(batch))
         wav_lengths = torch.LongTensor(len(batch))
+        # Initialize tensor for d-vectors
+        d_vectors_padded = torch.FloatTensor(len(batch), 512)
+        d_vectors_padded.zero_()
+
         sid = torch.LongTensor(len(batch))
 
         text_padded = torch.LongTensor(len(batch), max_text_len)
@@ -349,9 +378,17 @@ class TextAudioSpeakerCollate():
             wav = row[2]
             wav_padded[i, :, :wav.size(1)] = wav
             wav_lengths[i] = wav.size(1)
+            
+            if self.use_d_vector:
+                # Convert d-vector list to tensor and assign
+                d_vector = torch.FloatTensor(row[3])  # Convert list to tensor
+                if d_vector.shape[0] != 512:
+                    raise ValueError("D-vector shape mismatch, expected 512, got {}".format(d_vector.shape[0]))
+                d_vectors_padded[i, :] = d_vector
+            else:
+                sid[i] = row[3]
 
-            sid[i] = row[3]
-
+        sid=d_vectors_padded
         if self.return_ids:
             return text_padded, text_lengths, spec_padded, spec_lengths, wav_padded, wav_lengths, sid, ids_sorted_decreasing
         return text_padded, text_lengths, spec_padded, spec_lengths, wav_padded, wav_lengths, sid
@@ -465,3 +502,5 @@ class DistributedBucketSampler(torch.utils.data.distributed.DistributedSampler):
 
     def __len__(self):
         return self.num_samples // self.batch_size
+
+

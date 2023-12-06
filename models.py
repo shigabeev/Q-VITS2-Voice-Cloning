@@ -1331,6 +1331,7 @@ class SynthesizerTrn(nn.Module):
                  gen_istft_hop_size,
                  n_speakers=0,
                  gin_channels=0,
+                 use_d_vector=False,
                  use_sdp=True,
                  ms_istft_vits=False,
                  mb_istft_vits=False,
@@ -1361,6 +1362,7 @@ class SynthesizerTrn(nn.Module):
         self.ms_istft_vits = ms_istft_vits
         self.mb_istft_vits = mb_istft_vits
         self.istft_vits = istft_vits
+        self.use_d_vector = use_d_vector
         self.use_spk_conditioned_encoder = kwargs.get(
             "use_spk_conditioned_encoder", False)
         self.use_transformer_flows = kwargs.get("use_transformer_flows", False)
@@ -1439,13 +1441,15 @@ class SynthesizerTrn(nn.Module):
         if n_speakers > 1:
             self.emb_g = nn.Embedding(n_speakers, gin_channels)
 
-    def forward(self, x, x_lengths, y, y_lengths, sid=None):
+    def forward(self, x, x_lengths, y, y_lengths, sid=None, d_vector=None):
         # x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
-        if self.n_speakers > 0:
+        if self.n_speakers > 0 and not self.use_d_vector:
             g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
+        elif self.use_d_vector:
+            g = d_vector.unsqueeze(-1)
         else:
             g = None
-
+        
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, g=g)  # vits2?
         z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
         z_p = self.flow(z, y_mask, g=g)
@@ -1497,9 +1501,11 @@ class SynthesizerTrn(nn.Module):
         o, o_mb = self.dec(z_slice, g=g)
         return o, o_mb, l_length, attn, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q), (x, logw, logw_)
 
-    def infer(self, x, x_lengths, sid=None, noise_scale=1, length_scale=1, noise_scale_w=1., max_len=None):
-        if self.n_speakers > 0:
+    def infer(self, x, x_lengths, sid=None, noise_scale=1, length_scale=1, noise_scale_w=1., max_len=None, d_vector=None):
+        if self.n_speakers > 0 and not self.use_d_vector:
             g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
+        elif self.use_d_vector:
+            g = d_vector.unsqueeze(-1)
         else:
             g = None
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, g=g)
@@ -1531,10 +1537,14 @@ class SynthesizerTrn(nn.Module):
     # currently vits-2 is not capable of voice conversion
     # comment - choihkk : Assuming the use of the ResidualCouplingTransformersLayer2 module, it seems that voice conversion is possible
 
-    def voice_conversion(self, y, y_lengths, sid_src, sid_tgt):
+    def voice_conversion(self, y, y_lengths, sid_src, sid_tgt, d_vector_src=None, d_vector_tgt=None):
         assert self.n_speakers > 0, "n_speakers have to be larger than 0."
-        g_src = self.emb_g(sid_src).unsqueeze(-1)
-        g_tgt = self.emb_g(sid_tgt).unsqueeze(-1)
+        if self.use_d_vector:
+            g_src = d_vector_src.unsqueeze(-1)
+            g_tgt = d_vector_tgt.unsqueeze(-1)
+        else:
+            g_src = self.emb_g(sid_src).unsqueeze(-1)
+            g_tgt = self.emb_g(sid_tgt).unsqueeze(-1)
         z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g_src)
         z_p = self.flow(z, y_mask, g=g_src)
         z_hat = self.flow(z_p, y_mask, g=g_tgt, reverse=True)

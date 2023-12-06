@@ -80,6 +80,7 @@ python train.py -c configs/mb_istft_vits2_base.json -m models/test
 
 ## TODO
 - [ ] Implement d-vector instead of speaker id for external speaker encoder as in YourTTS.
+- [ ] implement dataloader that would load d-vectors
 - [ ] Add quantized Text Encoder. BERT -> bottleneck -> text features.
 - [ ] VCTK audio loader
 - [x] Adan optimizer
