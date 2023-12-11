@@ -36,6 +36,7 @@ from losses import (
 from mel_processing import mel_spectrogram_torch, spec_to_mel_torch
 from text.symbols import symbols
 from adan import Adan
+import gc
 
 torch.autograd.set_detect_anomaly(True)
 torch.backends.cudnn.benchmark = True
@@ -182,11 +183,11 @@ def run(rank, n_gpus, hps):
         n_speakers=hps.data.n_speakers,
         mas_noise_scale_initial=mas_noise_scale_initial,
         noise_scale_delta=noise_scale_delta,
+        use_d_vector=hps.data.use_d_vector,
         **hps.model).cuda(rank)
     
     net_d = MultiPeriodDiscriminator(hps.model.use_spectral_norm).cuda(rank)
 
-    net_g.compile()
     net_d.compile()
 
     optim_g = Adan(net_g.parameters(), 
@@ -215,7 +216,7 @@ def run(rank, n_gpus, hps):
                      max_grad_norm=0., 
                      no_prox=False)
 
-        net_dur_disc.compile()
+        # net_dur_disc.compile()
     else:
         optim_dur_disc = None
 
@@ -300,10 +301,16 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
             rank, non_blocking=True)
         speakers = speakers.cuda(rank, non_blocking=True)
 
+        if hps.data.use_d_vector:
+            d_vectors = speakers
+            speakers = None
+        else:
+            d_vectors = None
+
         with autocast(enabled=hps.train.fp16_run):
             y_hat, y_hat_mb, l_length, attn, ids_slice, x_mask, z_mask, \
                 (z, z_p, m_p, logs_p, m_q, logs_q), (hidden_x, logw, logw_) = net_g(x, x_lengths, spec, spec_lengths,
-                                                                                    speakers)
+                                                                                    sid=speakers, d_vector=d_vectors)
 
             if hps.model.use_mel_posterior_encoder or hps.data.use_mel_posterior_encoder:
                 mel = spec
@@ -463,6 +470,9 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
         global_step += 1
 
+    gc.collect()
+    torch.cuda.empty_cache()
+    
     if rank == 0:
         logger.info('====> Epoch: {}'.format(epoch))
 
@@ -474,7 +484,16 @@ def evaluate(hps, generator, eval_loader, writer_eval):
             x, x_lengths = x.cuda(0), x_lengths.cuda(0)
             spec, spec_lengths = spec.cuda(0), spec_lengths.cuda(0)
             y, y_lengths = y.cuda(0), y_lengths.cuda(0)
-            speakers = speakers.cuda(0)
+            if hps.data.use_d_vector:
+                d_vectors = speakers
+                speakers = None
+                d_vectors = d_vectors.cuda(0)
+                d_vectors = d_vectors[:1]
+            else:
+                d_vectors = None
+                speakers = speakers.cuda(0)
+                speakers = speakers[:1]
+            
 
             # remove else
             x = x[:1]
@@ -483,10 +502,9 @@ def evaluate(hps, generator, eval_loader, writer_eval):
             spec_lengths = spec_lengths[:1]
             y = y[:1]
             y_lengths = y_lengths[:1]
-            speakers = speakers[:1]
             break
         y_hat, y_hat_mb, attn, mask, * \
-            _ = generator.module.infer(x, x_lengths, speakers, max_len=1000)
+            _ = generator.module.infer(x, x_lengths, sid=speakers, d_vector=d_vectors, max_len=1000)
         y_hat_lengths = mask.sum([1, 2]).long() * hps.data.hop_length
 
         if hps.model.use_mel_posterior_encoder or hps.data.use_mel_posterior_encoder:

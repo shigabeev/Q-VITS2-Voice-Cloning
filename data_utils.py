@@ -10,6 +10,7 @@ from text import text_to_sequence, cleaned_text_to_sequence
 
 from TTS.tts.utils.speakers import SpeakerManager
 
+
 CONFIG_SE_PATH = "/home/frappuccino/dev/synthy-tts/tts_triton_serving/model_repository/speaker_encoder/1682104736/speaker_checkpoint/config_se.json"
 CHECKPOINT_SE_PATH = "/home/frappuccino/dev/synthy-tts/tts_triton_serving/model_repository/speaker_encoder/1682104736/speaker_checkpoint/speaker_encoder.pth.tar"
 
