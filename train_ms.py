@@ -185,7 +185,7 @@ def run(rank, n_gpus, hps):
         noise_scale_delta=noise_scale_delta,
         use_d_vector=hps.data.use_d_vector,
         **hps.model).cuda(rank)
-    
+
     net_d = MultiPeriodDiscriminator(hps.model.use_spectral_norm).cuda(rank)
 
     net_d.compile()
@@ -197,7 +197,7 @@ def run(rank, n_gpus, hps):
                      eps = hps.train.eps, 
                      max_grad_norm=0., 
                      no_prox=False)
-
+    
     optim_d = Adan(net_d.parameters(), 
                      lr=hps.train.learning_rate, 
                      weight_decay=0.02, 
@@ -206,6 +206,8 @@ def run(rank, n_gpus, hps):
                      max_grad_norm=0., 
                      no_prox=False)
 
+    # optim_g = torch.compile(optim_g)
+    # optim_d = torch.compile(optim_d)
 
     if net_dur_disc is not None:
         optim_dur_disc = Adan(net_dur_disc.parameters(), 
@@ -215,7 +217,8 @@ def run(rank, n_gpus, hps):
                      eps = hps.train.eps, 
                      max_grad_norm=0., 
                      no_prox=False)
-
+        
+        # optim_dur_disc = torch.compile(optim_dur_disc)
         # net_dur_disc.compile()
     else:
         optim_dur_disc = None

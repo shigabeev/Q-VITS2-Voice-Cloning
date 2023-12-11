@@ -335,15 +335,16 @@ class TextEncoder(nn.Module):
     def forward(self, x, x_lengths, g=None):
         x = self.emb(x) * math.sqrt(self.hidden_channels)  # [b, t, h]
         x = torch.transpose(x, 1, -1)  # [b, h, t]
-        x_mask = torch.unsqueeze(commons.sequence_mask(
-            x_lengths, x.size(2)), 1).to(x.dtype)
+
+        # Convert x.size(2) to a tensor
+        max_length_tensor = torch.tensor(x.size(2), dtype=torch.int64, device=x.device)
+        x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, max_length_tensor), 1).to(x.dtype)
 
         x = self.encoder(x * x_mask, x_mask, g=g)
         stats = self.proj(x) * x_mask
 
         m, logs = torch.split(stats, self.out_channels, dim=1)
         return x, m, logs, x_mask
-
 
 class ResidualCouplingTransformersLayer2(nn.Module):  # vits2
     def __init__(
@@ -1096,62 +1097,49 @@ class Multiband_iSTFT_Generator(torch.nn.Module):  # !
             l.remove_weight_norm()
 
 
-class Multistream_iSTFT_Generator(torch.nn.Module):
+class Multistream_iSTFT_Generator(nn.Module):
     def __init__(self, initial_channel, resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates,
                  upsample_initial_channel, upsample_kernel_sizes, gen_istft_n_fft, gen_istft_hop_size, subbands,
                  gin_channels=0, is_onnx=False):
         super(Multistream_iSTFT_Generator, self).__init__()
-        # self.h = h
+        # Initialize additional attributes
+        self.gen_istft_n_fft = gen_istft_n_fft
+        self.gen_istft_hop_size = gen_istft_hop_size
         self.subbands = subbands
         self.num_kernels = len(resblock_kernel_sizes)
         self.num_upsamples = len(upsample_rates)
-        self.conv_pre = weight_norm(
-            Conv1d(initial_channel, upsample_initial_channel, 7, 1, padding=3))
-        resblock = modules.ResBlock1 if resblock == '1' else modules.ResBlock2
+        self.conv_pre = weight_norm(nn.Conv1d(initial_channel, upsample_initial_channel, 7, 1, padding=3))
+        resblock_class = modules.ResBlock1 if resblock == '1' else modules.ResBlock2
 
         self.ups = nn.ModuleList()
+        self.resblocks = nn.ModuleList()
         for i, (u, k) in enumerate(zip(upsample_rates, upsample_kernel_sizes)):
             self.ups.append(weight_norm(
-                ConvTranspose1d(upsample_initial_channel // (2 ** i), upsample_initial_channel // (2 ** (i + 1)),
-                                k, u, padding=(k - u) // 2)))
+                nn.ConvTranspose1d(upsample_initial_channel // (2 ** i), upsample_initial_channel // (2 ** (i + 1)),
+                                   k, u, padding=(k - u) // 2)))
 
-        self.resblocks = nn.ModuleList()
-        for i in range(len(self.ups)):
             ch = upsample_initial_channel // (2 ** (i + 1))
             for j, (k, d) in enumerate(zip(resblock_kernel_sizes, resblock_dilation_sizes)):
-                self.resblocks.append(resblock(ch, k, d))
+                self.resblocks.append(resblock_class(ch, k, d))
 
         self.post_n_fft = gen_istft_n_fft
-        self.ups.apply(init_weights)
-        self.reflection_pad = torch.nn.ReflectionPad1d((1, 0))
-        self.reshape_pixelshuffle = []
+        self.reflection_pad = nn.ReflectionPad1d((1, 0))
+        self.subband_conv_post = weight_norm(nn.Conv1d(ch, self.subbands * (self.post_n_fft + 2), 7, 1, padding=3))
 
-        self.subband_conv_post = weight_norm(
-            Conv1d(ch, self.subbands * (self.post_n_fft + 2), 7, 1, padding=3))
-
-        self.subband_conv_post.apply(init_weights)
-
-        self.gen_istft_n_fft = gen_istft_n_fft
-        self.gen_istft_hop_size = gen_istft_hop_size
-
-        updown_filter = torch.zeros(
-            (self.subbands, self.subbands, self.subbands)).float()
+        updown_filter = torch.zeros((self.subbands, self.subbands, self.subbands)).float()
         for k in range(self.subbands):
             updown_filter[k, k, 0] = 1.0
         self.register_buffer("updown_filter", updown_filter)
-        # self.multistream_conv_post = weight_norm(Conv1d(4, 1, kernel_size=63, bias=False, padding=get_padding(63, 1)))
-        self.multistream_conv_post = weight_norm(Conv1d(
-            self.subbands, 1, kernel_size=63, bias=False, padding=get_padding(63, 1)))  # from MB-iSTFT-VITS-44100-Ja
-        self.multistream_conv_post.apply(init_weights)
+        self.multistream_conv_post = weight_norm(nn.Conv1d(self.subbands, 1, kernel_size=63, bias=False, padding=31)) # Padding set to half of kernel size
 
-        # - for onnx
-        if is_onnx == True:
-            self.stft = OnnxSTFT(filter_length=self.gen_istft_n_fft,
-                                 hop_length=self.gen_istft_hop_size, win_length=self.gen_istft_n_fft)
+        self.lrelu_slope = 0.01
+        
+        # STFT Module
+        if is_onnx:
+            self.stft = OnnxSTFT(filter_length=self.gen_istft_n_fft, hop_length=self.gen_istft_hop_size, win_length=self.gen_istft_n_fft)
         else:
-            self.stft = TorchSTFT(filter_length=self.gen_istft_n_fft,
-                                  hop_length=self.gen_istft_hop_size, win_length=self.gen_istft_n_fft)
-
+            self.stft = TorchSTFT(filter_length=self.gen_istft_n_fft, hop_length=self.gen_istft_hop_size, win_length=self.gen_istft_n_fft)
+        
     def forward(self, x, g=None):
         '''
         stft = TorchSTFT(filter_length=self.gen_istft_n_fft, hop_length=self.gen_istft_hop_size,
@@ -1179,22 +1167,18 @@ class Multistream_iSTFT_Generator(torch.nn.Module):
         x = F.leaky_relu(x)
         x = self.reflection_pad(x)
         x = self.subband_conv_post(x)
-        x = torch.reshape(
-            x, (x.shape[0], self.subbands, x.shape[1] // self.subbands, x.shape[-1]))
+        x = torch.reshape(x, (x.shape[0], self.subbands, x.shape[1] // self.subbands, x.shape[-1]))
 
         spec = torch.exp(x[:, :, :self.post_n_fft // 2 + 1, :])
         phase = math.pi * torch.sin(x[:, :, self.post_n_fft // 2 + 1:, :])
 
         y_mb_hat = stft.inverse(
-            torch.reshape(
-                spec, (spec.shape[0] * self.subbands, self.gen_istft_n_fft // 2 + 1, spec.shape[-1])),
+            torch.reshape(spec, (spec.shape[0] * self.subbands, self.gen_istft_n_fft // 2 + 1, spec.shape[-1])),
             torch.reshape(phase, (phase.shape[0] * self.subbands, self.gen_istft_n_fft // 2 + 1, phase.shape[-1])))
-        y_mb_hat = torch.reshape(
-            y_mb_hat, (x.shape[0], self.subbands, 1, y_mb_hat.shape[-1]))
+        y_mb_hat = torch.reshape(y_mb_hat, (x.shape[0], self.subbands, 1, y_mb_hat.shape[-1]))
         y_mb_hat = y_mb_hat.squeeze(-2)
 
-        y_mb_hat = F.conv_transpose1d(y_mb_hat, self.updown_filter.to(
-            x.device) * self.subbands, stride=self.subbands)
+        y_mb_hat = F.conv_transpose1d(y_mb_hat, self.updown_filter.to(x.device) * self.subbands, stride=self.subbands)
 
         y_g_hat = self.multistream_conv_post(y_mb_hat)
 
@@ -1330,7 +1314,9 @@ class SynthesizerTrn(nn.Module):
                  gen_istft_n_fft,
                  gen_istft_hop_size,
                  n_speakers=0,
+                 n_languages=0,
                  gin_channels=0,
+                 enc_lin_channels=4,
                  use_d_vector=False,
                  use_sdp=True,
                  ms_istft_vits=False,
@@ -1358,7 +1344,9 @@ class SynthesizerTrn(nn.Module):
         self.upsample_kernel_sizes = upsample_kernel_sizes
         self.segment_size = segment_size
         self.n_speakers = n_speakers
+        self.n_languages = n_languages
         self.gin_channels = gin_channels
+        self.enc_lin_channels = enc_lin_channels
         self.ms_istft_vits = ms_istft_vits
         self.mb_istft_vits = mb_istft_vits
         self.istft_vits = istft_vits
@@ -1382,6 +1370,10 @@ class SynthesizerTrn(nn.Module):
             self.enc_gin_channels = gin_channels
         else:
             self.enc_gin_channels = 0
+        
+        if self.n_languages > 0:
+            self.enc_lin_channels = enc_lin_channels
+
         self.enc_p = TextEncoder(n_vocab,
                                  inter_channels,
                                  hidden_channels,
@@ -1390,7 +1382,7 @@ class SynthesizerTrn(nn.Module):
                                  n_layers,
                                  kernel_size,
                                  p_dropout,
-                                 gin_channels=self.enc_gin_channels)
+                                 gin_channels=self.enc_lin_channels)
 
         if mb_istft_vits == True:
             print('Multi-band iSTFT VITS2')
@@ -1417,9 +1409,11 @@ class SynthesizerTrn(nn.Module):
                                  upsample_rates,
                                  upsample_initial_channel, upsample_kernel_sizes, gin_channels=gin_channels)  # vits 2
 
+
         self.enc_q = PosteriorEncoder(spec_channels, inter_channels, hidden_channels, 5, 1, 16,
                                       gin_channels=gin_channels)
-        # self.flow = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels)
+        
+        
         self.flow = ResidualCouplingTransformersBlock(
             inter_channels,
             hidden_channels,
@@ -1440,8 +1434,10 @@ class SynthesizerTrn(nn.Module):
 
         if n_speakers > 1:
             self.emb_g = nn.Embedding(n_speakers, gin_channels)
+        if n_languages > 1:
+            self.emb_l = nn.Embedding(n_languages, self.enc_lin_channels)
 
-    def forward(self, x, x_lengths, y, y_lengths, sid=None, d_vector=None):
+    def forward(self, x, x_lengths, y, y_lengths, sid=None, d_vector=None, lid=None):
         # x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
         if self.n_speakers > 0 and not self.use_d_vector:
             g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
@@ -1450,8 +1446,13 @@ class SynthesizerTrn(nn.Module):
         else:
             g = None
         
-        x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, g=g)  # vits2?
-        z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
+        if self.n_languages>1:
+            l_emb = self.emb_l(lid).unsqueeze(-1)
+        else:
+            l_emb = None
+        
+        x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, g=l_emb)  # vits2?
+        z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=l_emb)
         z_p = self.flow(z, y_mask, g=g)
 
         with torch.no_grad():
@@ -1501,14 +1502,20 @@ class SynthesizerTrn(nn.Module):
         o, o_mb = self.dec(z_slice, g=g)
         return o, o_mb, l_length, attn, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q), (x, logw, logw_)
 
-    def infer(self, x, x_lengths, sid=None, noise_scale=1, length_scale=1, noise_scale_w=1., max_len=None, d_vector=None):
+    def infer(self, x, x_lengths, sid=None, noise_scale=1, length_scale=1, noise_scale_w=1., max_len=None, d_vector=None, lid=None):
         if self.n_speakers > 0 and not self.use_d_vector:
             g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
         elif self.use_d_vector:
             g = d_vector.unsqueeze(-1)
         else:
             g = None
-        x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, g=g)
+        
+        if self.n_languages>1:
+            l_emb = self.emb_l(lid).unsqueeze(-1)
+        else:
+            l_emb = None
+
+        x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, g=l_emb)
         if self.use_sdp:
             logw = self.dp(x, x_mask, g=g, reverse=True,
                            noise_scale=noise_scale_w)
