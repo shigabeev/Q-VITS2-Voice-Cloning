@@ -40,6 +40,7 @@ import gc
 
 torch.autograd.set_detect_anomaly(True)
 torch.backends.cudnn.benchmark = True
+torch.set_float32_matmul_precision('medium')
 global_step = 0
 
 
@@ -312,7 +313,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
         with autocast(enabled=hps.train.fp16_run):
             y_hat, y_hat_mb, l_length, attn, ids_slice, x_mask, z_mask, \
-                (z, z_p, m_p, logs_p, m_q, logs_q), (hidden_x, logw, logw_) = net_g(x, x_lengths, spec, spec_lengths,
+                (z, z_p, m_p, logs_p, m_q, logs_q), (hidden_x, logw, logw_), loss_vq = net_g(x, x_lengths, spec, spec_lengths,
                                                                                     sid=speakers, d_vector=d_vectors)
 
             if hps.model.use_mel_posterior_encoder or hps.data.use_mel_posterior_encoder:
@@ -393,7 +394,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 else:
                     loss_subband = torch.tensor(0.0)
 
-                loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl + loss_subband
+                loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl + loss_subband + loss_vq
                 if net_dur_disc is not None:
                     loss_dur_gen, losses_dur_gen = generator_loss(y_dur_hat_g)
                     loss_gen_all += loss_dur_gen
@@ -416,7 +417,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 logger.info([x.item() for x in losses] + [global_step, lr])
 
                 scalar_dict = {"loss/g/total": loss_gen_all, "loss/d/total": loss_disc_all, "learning_rate": lr,
-                               "grad_norm_d": grad_norm_d, "grad_norm_g": grad_norm_g}
+                               "grad_norm_d": grad_norm_d, "grad_norm_g": grad_norm_g, 'loss/vq':loss_vq}
                 if net_dur_disc is not None:
                     scalar_dict.update(
                         {"loss/dur_disc/total": loss_dur_disc_all, "grad_norm_dur_disc": grad_norm_dur_disc})

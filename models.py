@@ -1262,6 +1262,7 @@ class DiscriminatorS(torch.nn.Module):
         return x, fmap
 
 
+
 class MultiPeriodDiscriminator(torch.nn.Module):
     def __init__(self, use_spectral_norm=False):
         super(MultiPeriodDiscriminator, self).__init__()
@@ -1289,6 +1290,40 @@ class MultiPeriodDiscriminator(torch.nn.Module):
         return y_d_rs, y_d_gs, fmap_rs, fmap_gs
 
 
+class VectorQuantizer(nn.Module):
+    def __init__(self, num_embeddings, embedding_dim, commitment_cost):
+        super(VectorQuantizer, self).__init__()
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.commitment_cost = commitment_cost
+
+        self.embedding = nn.Embedding(self.num_embeddings, self.embedding_dim)
+        self.embedding.weight.data.uniform_(-1 / self.num_embeddings, 1 / self.num_embeddings)
+
+    def forward(self, x):
+        # Reshape x to [batch_size * seq_len, embedding_dim]
+        flat_x = x.reshape(-1, self.embedding_dim)
+
+        # Compute distances between input embeddings and codebook vectors
+        distances = (torch.sum(flat_x**2, dim=1, keepdim=True) 
+                     + torch.sum(self.embedding.weight**2, dim=1)
+                     - 2 * torch.matmul(flat_x, self.embedding.weight.t()))
+
+        # Find the nearest embeddings in the codebook
+        encoding_indices = torch.argmin(distances, dim=1)
+        quantized = self.embedding(encoding_indices).view_as(x)
+
+        # Compute the VQ loss
+        e_latent_loss = F.mse_loss(quantized.detach(), x)
+        q_latent_loss = F.mse_loss(quantized, x.detach())
+        loss = q_latent_loss + self.commitment_cost * e_latent_loss
+
+        # Use a straight-through estimator for backpropagation
+        quantized = x + (quantized - x).detach()
+
+        return quantized, loss, encoding_indices
+
+    
 class SynthesizerTrn(nn.Module):
     """
   Synthesizer for Training
@@ -1436,6 +1471,8 @@ class SynthesizerTrn(nn.Module):
             self.emb_g = nn.Embedding(n_speakers, gin_channels)
         if n_languages > 1:
             self.emb_l = nn.Embedding(n_languages, self.enc_lin_channels)
+        
+        self.vector_quantizer = VectorQuantizer(num_embeddings=512, embedding_dim=self.hidden_channels, commitment_cost=0.25)
 
     def forward(self, x, x_lengths, y, y_lengths, sid=None, d_vector=None, lid=None):
         # x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
@@ -1451,8 +1488,12 @@ class SynthesizerTrn(nn.Module):
         else:
             l_emb = None
         
-        x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, g=l_emb)  # vits2?
+        x, m_p_cont, logs_p, x_mask = self.enc_p(x, x_lengths, g=l_emb)  # vits2?
         z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=l_emb)
+
+        # Quantize the encoder outputs
+        m_p, loss_vq, _ = self.vector_quantizer(m_p_cont)
+
         z_p = self.flow(z, y_mask, g=g)
 
         with torch.no_grad():
@@ -1500,7 +1541,7 @@ class SynthesizerTrn(nn.Module):
         z_slice, ids_slice = commons.rand_slice_segments(
             z, y_lengths, self.segment_size)
         o, o_mb = self.dec(z_slice, g=g)
-        return o, o_mb, l_length, attn, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q), (x, logw, logw_)
+        return o, o_mb, l_length, attn, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q), (x, logw, logw_), loss_vq
 
     def infer(self, x, x_lengths, sid=None, noise_scale=1, length_scale=1, noise_scale_w=1., max_len=None, d_vector=None, lid=None):
         if self.n_speakers > 0 and not self.use_d_vector:
@@ -1515,7 +1556,9 @@ class SynthesizerTrn(nn.Module):
         else:
             l_emb = None
 
-        x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, g=l_emb)
+        x, m_p_cont, logs_p, x_mask = self.enc_p(x, x_lengths, g=l_emb)
+        # Quantize the encoder outputs
+        m_p, _, _ = self.vector_quantizer(m_p_cont)
         if self.use_sdp:
             logw = self.dp(x, x_mask, g=g, reverse=True,
                            noise_scale=noise_scale_w)
@@ -1552,7 +1595,7 @@ class SynthesizerTrn(nn.Module):
         else:
             g_src = self.emb_g(sid_src).unsqueeze(-1)
             g_tgt = self.emb_g(sid_tgt).unsqueeze(-1)
-        z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g_src)
+        z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=None)
         z_p = self.flow(z, y_mask, g=g_src)
         z_hat = self.flow(z_p, y_mask, g=g_tgt, reverse=True)
         o_hat, o_hat_mb = self.dec(z_hat * y_mask, g=g_tgt)
