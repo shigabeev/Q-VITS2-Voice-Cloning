@@ -1110,6 +1110,9 @@ class Multistream_iSTFT_Generator(nn.Module):
         self.num_upsamples = len(upsample_rates)
         self.conv_pre = weight_norm(nn.Conv1d(initial_channel, upsample_initial_channel, 7, 1, padding=3))
         resblock_class = modules.ResBlock1 if resblock == '1' else modules.ResBlock2
+        self.gin_channels = gin_channels
+        if self.gin_channels > 0:
+            self.cond_layer = nn.Conv1d(gin_channels, upsample_initial_channel, 1)
 
         self.ups = nn.ModuleList()
         self.resblocks = nn.ModuleList()
@@ -1150,6 +1153,9 @@ class Multistream_iSTFT_Generator(nn.Module):
         # pqmf = PQMF(x.device)
 
         x = self.conv_pre(x)  # [B, ch, length]
+
+        if self.gin_channels > 0:
+            x = x + self.cond_layer(g)
 
         for i in range(self.num_upsamples):
 
@@ -1356,6 +1362,7 @@ class SynthesizerTrn(nn.Module):
                  use_sdp=True,
                  ms_istft_vits=False,
                  mb_istft_vits=False,
+                 use_vector_quantizer=False,
                  subbands=False,
                  istft_vits=False,
                  is_onnx=False,
@@ -1386,6 +1393,7 @@ class SynthesizerTrn(nn.Module):
         self.mb_istft_vits = mb_istft_vits
         self.istft_vits = istft_vits
         self.use_d_vector = use_d_vector
+        self.use_vector_quantizer = use_vector_quantizer
         self.use_spk_conditioned_encoder = kwargs.get(
             "use_spk_conditioned_encoder", False)
         self.use_transformer_flows = kwargs.get("use_transformer_flows", False)
@@ -1489,10 +1497,14 @@ class SynthesizerTrn(nn.Module):
             l_emb = None
         
         x, m_p_cont, logs_p, x_mask = self.enc_p(x, x_lengths, g=l_emb)  # vits2?
-        z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=l_emb)
+        z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
 
-        # Quantize the encoder outputs
-        m_p, loss_vq, _ = self.vector_quantizer(m_p_cont)
+        if self.use_vector_quantizer:
+            # Quantize the encoder outputs1
+            m_p, loss_vq, _ = self.vector_quantizer(m_p_cont)
+        else:
+            m_p = m_p_cont
+            loss_vq = None
 
         z_p = self.flow(z, y_mask, g=g)
 
@@ -1557,8 +1569,14 @@ class SynthesizerTrn(nn.Module):
             l_emb = None
 
         x, m_p_cont, logs_p, x_mask = self.enc_p(x, x_lengths, g=l_emb)
-        # Quantize the encoder outputs
-        m_p, _, _ = self.vector_quantizer(m_p_cont)
+        
+        if self.use_vector_quantizer:
+            # Quantize the encoder outputs1
+            m_p, loss_vq, _ = self.vector_quantizer(m_p_cont)
+        else:
+            m_p = m_p_cont
+        
+        
         if self.use_sdp:
             logw = self.dp(x, x_mask, g=g, reverse=True,
                            noise_scale=noise_scale_w)
