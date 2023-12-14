@@ -915,7 +915,7 @@ class Generator(torch.nn.Module):
         x = self.conv_post(x)
         x = torch.tanh(x)
 
-        return x
+        return x, None
 
     def remove_weight_norm(self):
         print('Removing weight norm...')
@@ -1110,9 +1110,15 @@ class Multistream_iSTFT_Generator(nn.Module):
         self.num_upsamples = len(upsample_rates)
         self.conv_pre = weight_norm(nn.Conv1d(initial_channel, upsample_initial_channel, 7, 1, padding=3))
         resblock_class = modules.ResBlock1 if resblock == '1' else modules.ResBlock2
+        # Assuming gin_channels is the dimensionality of the d-vector
         self.gin_channels = gin_channels
-        if self.gin_channels > 0:
-            self.cond_layer = nn.Conv1d(gin_channels, upsample_initial_channel, 1)
+        if gin_channels > 0:
+            # Condition on the d-vector by concatenating it with the input features
+            self.conv_pre = weight_norm(nn.Conv1d(initial_channel + gin_channels, 
+                                                  upsample_initial_channel, 7, 1, padding=3))
+        else:
+            self.conv_pre = weight_norm(nn.Conv1d(initial_channel, 
+                                                  upsample_initial_channel, 7, 1, padding=3))
 
         self.ups = nn.ModuleList()
         self.resblocks = nn.ModuleList()
@@ -1154,8 +1160,15 @@ class Multistream_iSTFT_Generator(nn.Module):
 
         x = self.conv_pre(x)  # [B, ch, length]
 
-        if self.gin_channels > 0:
-            x = x + self.cond_layer(g)
+        if g is not None:
+            # Ensure g has the right dimensions [B, gin_channels, T]
+            if g.dim() == 2:
+                g = g.unsqueeze(2).expand(-1, -1, x.size(2))
+            elif g.dim() == 3 and g.size(2) != x.size(2):
+                g = g.expand(-1, -1, x.size(2))
+
+            # Concatenate d-vector with input features
+            x = torch.cat([x, g], dim=1)
 
         for i in range(self.num_upsamples):
 
@@ -1352,8 +1365,8 @@ class SynthesizerTrn(nn.Module):
                  upsample_rates,
                  upsample_initial_channel,
                  upsample_kernel_sizes,
-                 gen_istft_n_fft,
-                 gen_istft_hop_size,
+                 gen_istft_n_fft=16,
+                 gen_istft_hop_size=4,
                  n_speakers=0,
                  n_languages=0,
                  gin_channels=0,
@@ -1480,7 +1493,8 @@ class SynthesizerTrn(nn.Module):
         if n_languages > 1:
             self.emb_l = nn.Embedding(n_languages, self.enc_lin_channels)
         
-        self.vector_quantizer = VectorQuantizer(num_embeddings=512, embedding_dim=self.hidden_channels, commitment_cost=0.25)
+        if self.use_vector_quantizer:
+            self.vector_quantizer = VectorQuantizer(num_embeddings=512, embedding_dim=self.hidden_channels, commitment_cost=0.25)
 
     def forward(self, x, x_lengths, y, y_lengths, sid=None, d_vector=None, lid=None):
         # x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
@@ -1553,7 +1567,16 @@ class SynthesizerTrn(nn.Module):
         z_slice, ids_slice = commons.rand_slice_segments(
             z, y_lengths, self.segment_size)
         o, o_mb = self.dec(z_slice, g=g)
-        return o, o_mb, l_length, attn, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q), (x, logw, logw_), loss_vq
+        return (o, 
+                o_mb, 
+                l_length, 
+                attn, 
+                ids_slice, 
+                x_mask, 
+                y_mask, 
+                (z, z_p, m_p, logs_p, m_q, logs_q), 
+                (x, logw, logw_), 
+                loss_vq)
 
     def infer(self, x, x_lengths, sid=None, noise_scale=1, length_scale=1, noise_scale_w=1., max_len=None, d_vector=None, lid=None):
         if self.n_speakers > 0 and not self.use_d_vector:

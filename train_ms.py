@@ -394,7 +394,9 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 else:
                     loss_subband = torch.tensor(0.0)
 
-                loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl + loss_subband + loss_vq
+                loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl + loss_subband
+                if loss_vq != None:
+                    loss_gen_all += loss_vq
                 if net_dur_disc is not None:
                     loss_dur_gen, losses_dur_gen = generator_loss(y_dur_hat_g)
                     loss_gen_all += loss_dur_gen
@@ -417,7 +419,9 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                 logger.info([x.item() for x in losses] + [global_step, lr])
 
                 scalar_dict = {"loss/g/total": loss_gen_all, "loss/d/total": loss_disc_all, "learning_rate": lr,
-                               "grad_norm_d": grad_norm_d, "grad_norm_g": grad_norm_g, 'loss/vq':loss_vq}
+                               "grad_norm_d": grad_norm_d, "grad_norm_g": grad_norm_g}
+                if loss_vq != None:
+                    scalar_dict['loss/vq'] = loss_vq
                 if net_dur_disc is not None:
                     scalar_dict.update(
                         {"loss/dur_disc/total": loss_dur_disc_all, "grad_norm_dur_disc": grad_norm_dur_disc})
