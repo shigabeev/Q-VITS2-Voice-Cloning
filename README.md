@@ -86,6 +86,10 @@ python setup.py build_ext --inplace
 # train_l.py to use Lightning
 python train_ms.py -c configs/shergin_d_vector_hfg.json -m models/test
 ```
+## Contact
+If you have any questions regarding how to run it, contact us in Telegram
+
+https://t.me/voice_stuff_chat
 
 ## Credits
 - [jaywalnut310/vits](https://github.com/jaywalnut310/vits)
