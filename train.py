@@ -286,7 +286,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
         with autocast(enabled=hps.train.fp16_run):
             y_hat, y_hat_mb, l_length, attn, ids_slice, x_mask, z_mask, (z, z_p, m_p, logs_p, m_q, logs_q), (
-                hidden_x, logw, logw_) = net_g(x, x_lengths, spec, spec_lengths)
+                hidden_x, logw, logw_), loss_vq = net_g(x, x_lengths, spec, spec_lengths)
 
             if hps.model.use_mel_posterior_encoder or hps.data.use_mel_posterior_encoder:
                 mel = spec
@@ -367,10 +367,12 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                     loss_subband = torch.tensor(0.0)
 
                 loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl + loss_subband
+                if loss_vq != None:
+                    loss_gen_all += loss_vq
                 if net_dur_disc is not None:
                     loss_dur_gen, losses_dur_gen = generator_loss(y_dur_hat_g)
                     loss_gen_all += loss_dur_gen
-
+                
         optim_g.zero_grad()
         scaler.scale(loss_gen_all).backward()
         scaler.unscale_(optim_g)
