@@ -1,13 +1,22 @@
-# MB-iSTFT-VITS2
+# The ultimate VITS2 
 
 ![Alt text](resources/image6.png)
 
-A... [vits2_pytorch](https://github.com/p0p4k/vits2_pytorch) and [MB-iSTFT-VITS](https://github.com/MasayaKawamura/MB-iSTFT-VITS) hybrid... Gods, an abomination! Who created this atrocity?
+The idea for this repo is to implement the most comprehensive VITS2 out here. 
 
-This is an experimental build. Does not guarantee performance, therefore. 
 
-According to [shigabeev](https://github.com/shigabeev)'s [experiment](https://github.com/FENRlR/MB-iSTFT-VITS2/issues/2), it can now dare claim the word SOTA for its performance (at least for Russian).
- 
+## Changelist
+- [x] Bump Librosa and python version to the highest
+- [x] Implement d-vector instead of speaker id for external speaker encoder as in YourTTS.
+- [x] Implement YourTTS styled d-vector-free text encoder and d-vector as an input to vocoder (currenlty only HiFiGAN does that)
+- [x] implement dataloader that would load d-vectors
+- [x] Add quantized Text Encoder. BERT -> bottleneck -> text features.
+- [ ] VCTK audio loader
+- [ ] Implement a better vocoder with support for d-vector
+- [ ] Remove boilerplate code in attentions.py and replace it with native torch.nn.Encoder
+- [x] Adan optimizer
+- [x] PyTorch Lightning support
+- [ ] Add [Bidirectional Flow Loss](https://github.com/PlayVoice/vits_chinese/issues/33)
 
 ## pre-requisites
 1. Python >= 3.8
@@ -75,16 +84,8 @@ python setup.py build_ext --inplace
 ```sh
 # train_ms.py for multi speaker
 # train_l.py to use Lightning
-python train.py -c configs/mb_istft_vits2_base.json -m models/test
+python train_ms.py -c configs/shergin_d_vector_hfg.json -m models/test
 ```
-
-## TODO
-- [ ] Implement d-vector instead of speaker id for external speaker encoder as in YourTTS.
-- [ ] implement dataloader that would load d-vectors
-- [ ] Add quantized Text Encoder. BERT -> bottleneck -> text features.
-- [ ] VCTK audio loader
-- [x] Adan optimizer
-- [x] PyTorch Lightning support
 
 ## Credits
 - [jaywalnut310/vits](https://github.com/jaywalnut310/vits)

@@ -1501,7 +1501,9 @@ class SynthesizerTrn(nn.Module):
         if self.n_speakers > 0 and not self.use_d_vector:
             g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
         elif self.use_d_vector:
-            g = d_vector.unsqueeze(-1)
+            g = F.normalize(d_vector).unsqueeze(-1)
+            if g.ndim == 2:
+                g = g.unsqueeze_(0)
         else:
             g = None
         
@@ -1582,7 +1584,9 @@ class SynthesizerTrn(nn.Module):
         if self.n_speakers > 0 and not self.use_d_vector:
             g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
         elif self.use_d_vector:
-            g = d_vector.unsqueeze(-1)
+            g = F.normalize(d_vector).unsqueeze(-1)
+            if g.ndim == 2:
+                g = g.unsqueeze_(0)
         else:
             g = None
         
