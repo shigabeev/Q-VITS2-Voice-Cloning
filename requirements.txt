@@ -1,17 +1,16 @@
-cmake==3.26.1
-Cython==0.29.21
-librosa==0.8.0
-matplotlib==3.3.1
-numpy==1.19.5
-numba==0.56.4
-phonemizer==3.2.1
-scipy==1.10.1
+cmake>=3.26.1
+Cython>=0.29.21
+librosa>=0.7.0
+matplotlib
+numpy>=1.19.5
+numba>=0.56.4
+phonemizer>=3.2.1
+scipy
 #torch~=1.13.0+cu117
 #torchvision==0.7.0
 Unidecode==1.1.1
 tensorboardX
-tqdm~=4.66.1
-packaging~=23.1
+tqdm
 #pyaudio
 langdetect==1.0.9
 inflect==6.0.2
@@ -25,6 +24,7 @@ g2pk2==0.0.1
 pypinyin==0.44.0
 jieba==0.42.1
 tensorboard
+tts
 # ipython for notebook inference
 ipython
 # ONNX
