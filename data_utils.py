@@ -389,7 +389,8 @@ class TextAudioSpeakerCollate():
             else:
                 sid[i] = row[3]
 
-        sid=d_vectors_padded
+        if self.use_d_vector:
+            sid = d_vectors_padded
         if self.return_ids:
             return text_padded, text_lengths, spec_padded, spec_lengths, wav_padded, wav_lengths, sid, ids_sorted_decreasing
         return text_padded, text_lengths, spec_padded, spec_lengths, wav_padded, wav_lengths, sid
